@@ -75,15 +75,6 @@ private:
     void refreshCachedReverseRelatedCards(CardNameMap &cardMap);
 
     /**
-     * @brief Empties every set, dropping the strong card references they hold.
-     *
-     * A card keeps a CardSetPtr through its printings while its set keeps a strong CardInfoPtr, so the
-     * two form a reference cycle. Dropping a whole snapshot has to break that cycle once, up front,
-     * instead of relying on the per-card detach in removeCard().
-     */
-    void detachSetMembership();
-
-    /**
      * @brief Drops a card from the database indexes and notifies observers.
      *
      * Callers are responsible for detaching the card from its sets first.
