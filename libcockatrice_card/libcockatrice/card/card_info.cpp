@@ -111,13 +111,6 @@ CardInfoPtr CardInfo::newInstance(const QString &_name,
     CardInfoPtr ptr(new CardInfo(_name, _text, _isToken, _properties, _relatedCards, _reverseRelatedCards, _sets,
                                  _uiAttributes, std::move(_localizedNames), std::move(_localizedTexts)));
 
-    for (const auto &printings : _sets) {
-        for (const PrintingInfo &printing : printings) {
-            printing.getSet()->append(ptr);
-            break;
-        }
-    }
-
     return ptr;
 }
 
@@ -131,22 +124,12 @@ CardInfoPtr CardInfo::newInstance(const QString &_name,
                                   const UiAttributes _uiAttributes,
                                   QString _simpleName,
                                   QSet<QString> _altNames,
-                                  bool _appendToSets,
                                   QMap<QString, QString> _localizedNames,
                                   QMap<QString, QString> _localizedTexts)
 {
     CardInfoPtr ptr(new CardInfo(_name, _text, _isToken, std::move(_propertiesBlob), _relatedCards,
                                  _reverseRelatedCards, _sets, _uiAttributes, std::move(_simpleName),
                                  std::move(_altNames), std::move(_localizedNames), std::move(_localizedTexts)));
-
-    if (_appendToSets) {
-        for (const auto &printings : _sets) {
-            for (const PrintingInfo &printing : printings) {
-                printing.getSet()->append(ptr);
-                break;
-            }
-        }
-    }
 
     return ptr;
 }
@@ -187,9 +170,6 @@ void CardInfo::addToSet(const CardSetPtr &_set, const PrintingInfo &_info)
         return;
     }
 
-    if (!_set->contains(self)) {
-        _set->append(self);
-    }
     if (!setsToPrintings[_set->getShortName()].contains(_info)) {
         setsToPrintings[_set->getShortName()].append(_info);
     }
