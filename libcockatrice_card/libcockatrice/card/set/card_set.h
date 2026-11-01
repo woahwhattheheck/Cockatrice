@@ -2,14 +2,10 @@
 #define COCKATRICE_CARD_SET_H
 
 #include <QDate>
-#include <QList>
 #include <QSharedPointer>
 #include <QString>
 
-class CardInfo;
 class ICardSetPriorityController;
-
-using CardInfoPtr = QSharedPointer<CardInfo>;
 
 class CardSet;
 
@@ -19,21 +15,18 @@ using CardSetPtr = QSharedPointer<CardSet>;
  * @class CardSet
  * @ingroup CardSets
  *
- * @brief A collection of cards grouped under a common identifier.
+ * @brief Metadata for a group of card printings.
  *
- * A set serves both as metadata (identifier, title, category, release date, and priority)
- * and as a container of all cards that belong to it. Each set can be enabled/disabled
- * and marked as known/unknown depending on context.
- *
- * The class inherits from `QList<CardInfoPtr>`, so it can be iterated over directly
- * to access its contents.
+ * A set owns only its metadata (identifier, title, category, release date, and priority).
+ * Individual CardInfo objects retain CardSetPtr references through their PrintingInfo
+ * entries; the reverse ownership edge is deliberately absent so discarded database
+ * snapshots cannot remain alive through a CardInfo/CardSet reference cycle.
  *
  * Typical usage:
  * - Query metadata such as identifier, category, or release date.
  * - Enable or disable sets according to user preference.
- * - Store and retrieve CardInfo objects associated with the set.
  */
-class CardSet : public QList<CardInfoPtr>
+class CardSet
 {
 public:
     /**
