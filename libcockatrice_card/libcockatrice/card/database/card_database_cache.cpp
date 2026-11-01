@@ -325,7 +325,7 @@ CardInfoPtr readCard(QDataStream &in, const SetNameMap &sets)
     }
 
     CardInfoPtr card = CardInfo::newInstance(name, text, isToken, propertiesBlob, related, reverse, cardSets, ui,
-                                             simpleName, altNames, false, localizedNames, localizedTexts);
+                                             simpleName, altNames, localizedNames, localizedTexts);
 
     return card;
 }
@@ -502,16 +502,6 @@ bool CardDatabaseCache::read(const QString &cachePath,
             data.simpleNameCards.insert(card->getSimpleName(), card);
         }
 
-        for (const CardInfoPtr &card : data.cards) {
-            for (const auto &printings : card->getSets()) {
-                for (const PrintingInfo &printing : printings) {
-                    if (auto set = printing.getSet()) {
-                        set->append(card);
-                        break;
-                    }
-                }
-            }
-        }
     }
 
     // Formats
