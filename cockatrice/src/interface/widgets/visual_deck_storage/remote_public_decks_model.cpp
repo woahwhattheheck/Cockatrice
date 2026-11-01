@@ -2,6 +2,7 @@
 
 #include "../../../client/settings/cache_settings.h"
 
+#include <QPointer>
 #include <QTimer>
 #include <QVariant>
 #include <QtGlobal>
@@ -31,10 +32,17 @@ RemotePublicDecksModel::RemotePublicDecksModel(AbstractClient *_client, QObject 
                          SettingsCache::instance().network().getKeepAlive() * 1000));
     connect(loadingTimeoutTimer, &QTimer::timeout, this, &RemotePublicDecksModel::onLoadingTimeout);
     connect(client, &AbstractClient::statusChanged, this, [this](ClientStatus status) {
-        if (status == StatusDisconnected) {
+        if (status == StatusDisconnected || status == StatusDisconnecting) {
+            ++requestSequence;
             loadingTimeoutTimer->stop();
             setLoading(false);
         }
+    });
+    connect(client, &QObject::destroyed, this, [this]() {
+        ++requestSequence;
+        loadingTimeoutTimer->stop();
+        setLoading(false);
+        client = nullptr;
     });
 }
 
@@ -134,39 +142,57 @@ void RemotePublicDecksModel::rebuildVisibleIndices()
 
 void RemotePublicDecksModel::refresh(const QString &userName)
 {
-    if (loading) {
+    if (!client || client->getStatus() == StatusDisconnected ||
+        client->getStatus() == StatusDisconnecting) {
+        ++requestSequence;
+        loadingTimeoutTimer->stop();
+        setLoading(false);
+        emit loadFailed(tr("The server connection is unavailable. Reconnect and try again."));
         return;
     }
-    // Every refresh captures its own request id so a reply that lands after its
-    // loading timeout (the reverse of the ping sweep dropping the command) is
-    // recognised as stale: it must not stop the newer request's timer or paint
-    // the grid with out-of-date data.
+
+    // A new refresh supersedes any older request, including one whose server
+    // command is still pending after a timeout. Its eventual reply is ignored.
     const int seq = ++requestSequence;
-    setLoading(true);
     loadingTimeoutTimer->start();
+    setLoading(true);
+
     Command_DeckListOtherUser cmd;
     cmd.set_user_name(userName.toStdString());
-    PendingCommand *pend = client->prepareSessionCommand(cmd);
+    PendingCommand *pend = AbstractClient::prepareSessionCommand(cmd);
+    if (!pend) {
+        loadingTimeoutTimer->stop();
+        setLoading(false);
+        emit loadFailed(tr("Could not prepare the public-deck request. Try again."));
+        return;
+    }
+
     connect(pend, &PendingCommand::finished, this,
-            [this, seq](const Response &response, const CommandContainer &commandContainer) {
+            [this, seq](const Response &response, const CommandContainer &commandContainer, const QVariant &) {
                 if (seq != requestSequence) {
-                    return; // a newer refresh superseded this one
+                    return;
                 }
-                decksReceived(response, commandContainer);
+                decksReceived(seq, response, commandContainer);
             });
     client->sendCommand(pend);
 }
 
 void RemotePublicDecksModel::onLoadingTimeout()
 {
+    ++requestSequence;
     setLoading(false);
     emit loadFailed(tr("The server did not respond in time. Try again."));
 }
 
 void RemotePublicDecksModel::clear()
 {
+    ++requestSequence;
+    loadingTimeoutTimer->stop();
+    setLoading(false);
+    beginResetModel();
     decks.clear();
-    rebuildVisibleIndices();
+    visibleIndices.clear();
+    endResetModel();
 }
 
 void RemotePublicDecksModel::setLoading(bool value)
@@ -178,10 +204,13 @@ void RemotePublicDecksModel::setLoading(bool value)
     emit loadingChanged(loading);
 }
 
-void RemotePublicDecksModel::decksReceived(const Response &response, const CommandContainer & /*commandContainer*/)
+void RemotePublicDecksModel::decksReceived(int seq, const Response &response, const CommandContainer & /*commandContainer*/)
 {
-    setLoading(false);
+    if (seq != requestSequence) {
+        return;
+    }
     loadingTimeoutTimer->stop();
+    setLoading(false);
     if (response.response_code() != Response::RespOk) {
         emit loadFailed(tr("Failed to load the user's public decks (server response code %1).")
                             .arg(QString::number(static_cast<int>(response.response_code()))));
@@ -189,23 +218,53 @@ void RemotePublicDecksModel::decksReceived(const Response &response, const Comma
     }
 
     const Response_DeckList &resp = response.GetExtension(Response_DeckList::ext);
-    decks.clear();
-    addFolder(resp.root());
-    rebuildVisibleIndices();
+    QList<DeckEntry> replacement;
+    addFolder(resp.root(), replacement);
+
+    QList<int> replacementIndices;
+    replacementIndices.reserve(replacement.size());
+    for (int row = 0; row < replacement.size(); ++row) {
+        const DeckEntry &entry = replacement.at(row);
+        if (!searchText.isEmpty() && !entry.name.contains(searchText, Qt::CaseInsensitive)) {
+            continue;
+        }
+        if (!activeColors.isEmpty() &&
+            !colorIdentityMatches(colorFilterMode, activeColors, entry.colorIdentity)) {
+            continue;
+        }
+        const QSet<QString> entryTags(entry.tags.cbegin(), entry.tags.cend());
+        if (!includedTags.isEmpty() &&
+            !std::all_of(includedTags.cbegin(), includedTags.cend(),
+                         [&entryTags](const QString &tag) { return entryTags.contains(tag); })) {
+            continue;
+        }
+        if (!excludedTags.isEmpty() &&
+            std::any_of(excludedTags.cbegin(), excludedTags.cend(),
+                        [&entry](const QString &tag) { return entry.tags.contains(tag); })) {
+            continue;
+        }
+        replacementIndices.append(row);
+    }
+
+    // Publish the complete new snapshot and its filtered index atomically.
+    beginResetModel();
+    decks = std::move(replacement);
+    visibleIndices = std::move(replacementIndices);
+    endResetModel();
 }
 
-void RemotePublicDecksModel::addFolder(const ServerInfo_DeckStorage_Folder &folder)
+void RemotePublicDecksModel::addFolder(const ServerInfo_DeckStorage_Folder &folder, QList<DeckEntry> &target)
 {
     const int itemCount = folder.items_size();
     for (int i = 0; i < itemCount; ++i) {
-        addTreeItem(folder.items(i));
+        addTreeItem(folder.items(i), target);
     }
 }
 
-void RemotePublicDecksModel::addTreeItem(const ServerInfo_DeckStorage_TreeItem &item)
+void RemotePublicDecksModel::addTreeItem(const ServerInfo_DeckStorage_TreeItem &item, QList<DeckEntry> &target)
 {
     if (item.has_folder()) {
-        addFolder(item.folder());
+        addFolder(item.folder(), target);
         return;
     }
 
@@ -222,5 +281,5 @@ void RemotePublicDecksModel::addTreeItem(const ServerInfo_DeckStorage_TreeItem &
         tags.append(QString::fromStdString(tag));
     }
     entry.tags = tags;
-    decks.append(entry);
+    target.append(std::move(entry));
 }
