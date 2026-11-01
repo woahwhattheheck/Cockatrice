@@ -228,10 +228,6 @@ public:
      *        @p _name.
      * @param _altNames Precomputed alternate names; pass {} to derive them from
      *        the printings.
-     * @param _appendToSets When true, the card is appended to each of
-     *        its CardSets. Pass false when building cards in parallel so the
-     *        (non-thread-safe) set membership is populated in a later
-     *        single-threaded pass.
      * @param _localizedNames Localized card names, keyed by language code.
      * @param _localizedTexts Localized rules text, keyed by language code.
      * @return Shared pointer to the new CardInfo instance.
@@ -246,7 +242,6 @@ public:
                                    UiAttributes _uiAttributes,
                                    QString _simpleName,
                                    QSet<QString> _altNames,
-                                   bool _appendToSets,
                                    QMap<QString, QString> _localizedNames = {},
                                    QMap<QString, QString> _localizedTexts = {});
 
