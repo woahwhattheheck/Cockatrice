@@ -249,7 +249,7 @@ bool FilterTreeModel::setData(const QModelIndex &index, const QVariant &value, i
         node->disable();
     }
 
-    emit dataChanged(index, index);
+    emit dataChanged(index, index, {Qt::CheckStateRole});
     return true;
 }
 

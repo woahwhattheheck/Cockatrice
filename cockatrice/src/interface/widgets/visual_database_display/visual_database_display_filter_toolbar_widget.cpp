@@ -25,6 +25,7 @@
 #include <QLineEdit>
 #include <QPersistentModelIndex>
 #include <QPointer>
+#include <QObject>
 #include <QSortFilterProxyModel>
 #include <QTimer>
 #include <QToolButton>
@@ -466,8 +467,21 @@ void VisualDatabaseDisplayFilterToolbarWidget::setCurrentFiltersPaused(bool paus
     if (!model) {
         return;
     }
+
+    // Layout-only mutations can retain a persistent root index after deleting
+    // its node. Stop this command if an observer restructures the source.
+    bool structureChanged = false;
+    QObject changeObserver;
+    const auto onStructureChanged = [&structureChanged] { structureChanged = true; };
+    connect(model.data(), &QAbstractItemModel::layoutAboutToBeChanged, &changeObserver, onStructureChanged);
+    connect(model.data(), &QAbstractItemModel::modelAboutToBeReset, &changeObserver, onStructureChanged);
+    connect(model.data(), &QAbstractItemModel::rowsAboutToBeInserted, &changeObserver, onStructureChanged);
+    connect(model.data(), &QAbstractItemModel::rowsAboutToBeRemoved, &changeObserver, onStructureChanged);
+    connect(model.data(), &QAbstractItemModel::rowsAboutToBeMoved, &changeObserver, onStructureChanged);
+
     QList<QPersistentModelIndex> parents;
-    for (int row = 0; row < model->rowCount(); ++row) {
+    const int rows = model->rowCount();
+    for (int row = 0; row < rows; ++row) {
         const QModelIndex parent = model->index(row, 0);
         if (hasCurrentFilterCriteria(model.data(), parent)) {
             parents.append(QPersistentModelIndex(parent));
@@ -475,8 +489,7 @@ void VisualDatabaseDisplayFilterToolbarWidget::setCurrentFiltersPaused(bool paus
     }
     const Qt::CheckState state = paused ? Qt::Unchecked : Qt::Checked;
     for (const QPersistentModelIndex &parent : parents) {
-        // setData observers may reset or destroy the source or this toolbar.
-        if (!toolbar || !model) {
+        if (!toolbar || !model || structureChanged) {
             return;
         }
         if (currentFiltersProxy->sourceModel() != model.data()) {
