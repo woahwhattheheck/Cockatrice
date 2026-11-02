@@ -38,6 +38,7 @@ public:
     [[nodiscard]] QLayoutItem *itemAt(int index) const override;
     QLayoutItem *takeAt(int index) override;
     void setGeometry(const QRect &rect) override;
+    void invalidate() override;
 
     // Size negotiation
     [[nodiscard]] Qt::Orientations expandingDirections() const override;
@@ -50,11 +51,13 @@ public:
     void setHorizontalMargin(int margin)
     {
         horizontalMargin = margin;
+        invalidate();
     }
     [[nodiscard]] int horizontalSpacing() const;
     void setVerticalMargin(int margin)
     {
         verticalMargin = margin;
+        invalidate();
     }
     [[nodiscard]] int verticalSpacing() const;
     [[nodiscard]] int smartSpacing(QStyle::PixelMetric pm) const;
@@ -72,6 +75,14 @@ protected:
     [[nodiscard]] QSize calculateSizeHintVertical() const;
     [[nodiscard]] QSize calculateMinimumSizeVertical() const;
 
+    // Shared by heightForWidth() and geometry placement, so wrapping and
+    // height-for-width children use exactly the same row sizes.
+    [[nodiscard]] QVector<QVector<QLayoutItem *>> rowsForWidth(int availableWidth) const;
+    [[nodiscard]] QVector<int> rowWidths(const QVector<QLayoutItem *> &row, int availableWidth) const;
+    [[nodiscard]] int rowHeight(const QVector<QLayoutItem *> &row, const QVector<int> &widths) const;
+
+    mutable int cachedHeightForWidthWidth = -1;
+    mutable int cachedHeightForWidth = -1;
     QList<QLayoutItem *> items;
     Qt::Orientation flowDirection;
     int horizontalMargin; ///< Horizontal spacing between items (-1 = use style default)

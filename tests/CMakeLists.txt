@@ -171,6 +171,16 @@ endfunction()
 
 # --- Unit tests ------------------------------------------------------------------
 
+cockatrice_add_test(
+  NAME
+  flow_layout_test
+  SOURCES
+  ${CMAKE_SOURCE_DIR}/cockatrice/src/interface/layouts/flow_layout.cpp
+  flow_layout_test.cpp
+  INCLUDE_DIRS
+  ${CMAKE_SOURCE_DIR}/cockatrice/src
+)
+
 cockatrice_add_test(NAME expression_test SOURCES expression_test.cpp LIBS libcockatrice_utility)
 cockatrice_add_test(NAME clamped_arithmetic_test SOURCES clamped_arithmetic_test.cpp LIBS libcockatrice_utility)
 cockatrice_add_test(NAME test_age_formatting SOURCES test_age_formatting.cpp LIBS libcockatrice_utility)

@@ -1,32 +1,37 @@
 /**
  * @file flow_layout.cpp
- * @brief Implementation of FlowLayout — a QLayout that wraps child widgets into rows
- *        (Qt::Horizontal flow) or columns (Qt::Vertical flow).
- *
- * Design contract (following Qt layout conventions):
- *   - setGeometry()  places children inside the given rect. Nothing else.
- *   - sizeHint()     reports the unconstrained preferred size (all items in one line).
- *   - minimumSize()  reports the minimum size (largest single item).
- *   - heightForWidth() reports the height needed for a given width (horizontal flow only).
- *
- * The layout never calls setFixedSize() or adjustSize() on its parent widget;
- * that is the responsibility of the parent widget / scroll area.
+ * @brief A layout that wraps child widgets into rows or columns.
  */
 
 #include "flow_layout.h"
 
-#include <QDebug>
 #include <QLayoutItem>
-#include <QMessageLogger>
-#include <QMetaObject>
+#include <QMargins>
 #include <QObject>
 #include <QPoint>
 #include <QRect>
-#include <QSizePolicy>
-#include <QStyle>
 #include <QWidget>
 #include <QWidgetItem>
 #include <QtGlobal>
+
+namespace
+{
+QSize preferredSize(const QLayoutItem *item)
+{
+    return item->sizeHint().expandedTo(item->minimumSize()).boundedTo(item->maximumSize());
+}
+
+int itemHeight(const QLayoutItem *item, int width)
+{
+    const int heightForWidth = item->hasHeightForWidth() ? item->heightForWidth(width) : -1;
+    const int height = heightForWidth >= 0 ? heightForWidth : preferredSize(item).height();
+    return qBound(item->minimumSize().height(), qMax(0, height), item->maximumSize().height());
+}
+} // namespace
+
+FlowLayout::FlowLayout(QWidget *parent) : FlowLayout(parent, Qt::Horizontal)
+{
+}
 
 FlowLayout::FlowLayout(QWidget *parent,
                        const Qt::Orientation flowDirection,
@@ -46,436 +51,333 @@ FlowLayout::~FlowLayout()
     }
 }
 
-/**
- * @brief Reports which axis the layout can expand along.
- *
- * A horizontally-flowing layout expands horizontally (and wraps vertically,
- * but that is governed by heightForWidth, not by this flag).
- * A vertically-flowing layout expands vertically.
- */
 Qt::Orientations FlowLayout::expandingDirections() const
 {
     return (flowDirection == Qt::Horizontal) ? Qt::Horizontal : Qt::Vertical;
 }
 
-/**
- * @brief Height-for-width is only meaningful for horizontal (wrapping) flow.
- */
 bool FlowLayout::hasHeightForWidth() const
 {
     return flowDirection == Qt::Horizontal;
 }
 
-/**
- * @brief Returns the height required to display all items within @p width.
- *
- * Only valid for horizontal flow; returns -1 otherwise so Qt ignores it.
- * Spacing is counted once between adjacent items, never before the first
- * or after the last.
- */
 int FlowLayout::heightForWidth(const int width) const
 {
-    if (flowDirection != Qt::Horizontal) {
+    if (!hasHeightForWidth()) {
         return -1;
     }
-
-    int totalHeight = 0;
-    int rowUsedWidth = 0;
-    int rowHeight = 0;
-
-    for (const QLayoutItem *item : items) {
-        if (!item || item->isEmpty()) {
-            continue;
-        }
-
-        const QSize itemSize = item->sizeHint();
-        // Spacing is only inserted between items, not before the first.
-        const int spaceX = (rowUsedWidth > 0) ? horizontalSpacing() : 0;
-
-        if (rowUsedWidth > 0 && rowUsedWidth + spaceX + itemSize.width() > width) {
-            // This item overflows the current row — commit the row and start a new one.
-            totalHeight += rowHeight + verticalSpacing();
-            rowUsedWidth = itemSize.width();
-            rowHeight = itemSize.height();
-        } else {
-            rowUsedWidth += spaceX + itemSize.width();
-            rowHeight = qMax(rowHeight, itemSize.height());
-        }
+    if (cachedHeightForWidth >= 0 && cachedHeightForWidthWidth == width) {
+        return cachedHeightForWidth;
     }
 
-    return totalHeight + rowHeight; // Include the final (possibly only) row.
+    const QMargins margins = contentsMargins();
+    const int availableWidth = qMax(0, width - margins.left() - margins.right());
+    const auto rows = rowsForWidth(availableWidth);
+    int height = margins.top() + margins.bottom();
+    for (int i = 0; i < rows.size(); ++i) {
+        if (i > 0) {
+            height += verticalSpacing();
+        }
+        height += rowHeight(rows.at(i), rowWidths(rows.at(i), availableWidth));
+    }
+    cachedHeightForWidthWidth = width;
+    cachedHeightForWidth = height;
+    return height;
 }
 
-/**
- * @brief Places all children within @p rect.
- *
- * This is the only method that may move/resize children.  It does NOT resize
- * the parent widget; that would break Qt's layout protocol.
- */
+void FlowLayout::invalidate()
+{
+    cachedHeightForWidthWidth = -1;
+    cachedHeightForWidth = -1;
+    QLayout::invalidate();
+}
+
 void FlowLayout::setGeometry(const QRect &rect)
 {
     QLayout::setGeometry(rect);
 
+    const QMargins margins = contentsMargins();
+    const int x = rect.x() + margins.left();
+    const int y = rect.y() + margins.top();
     if (flowDirection == Qt::Horizontal) {
-        layoutAllRows(rect.x(), rect.y(), rect.width());
+        layoutAllRows(x, y, qMax(0, rect.width() - margins.left() - margins.right()));
     } else {
-        layoutAllColumns(rect.x(), rect.y(), rect.height());
+        layoutAllColumns(x, y, qMax(0, rect.height() - margins.top() - margins.bottom()));
     }
 }
 
 QSize FlowLayout::sizeHint() const
 {
-    return (flowDirection == Qt::Horizontal) ? calculateSizeHintHorizontal() : calculateSizeHintVertical();
+    const QSize contentSize =
+        (flowDirection == Qt::Horizontal) ? calculateSizeHintHorizontal() : calculateSizeHintVertical();
+    const QMargins margins = contentsMargins();
+    return contentSize + QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
 }
 
 QSize FlowLayout::minimumSize() const
 {
-    return (flowDirection == Qt::Horizontal) ? calculateMinimumSizeHorizontal() : calculateMinimumSizeVertical();
+    const QSize contentSize =
+        (flowDirection == Qt::Horizontal) ? calculateMinimumSizeHorizontal() : calculateMinimumSizeVertical();
+    const QMargins margins = contentsMargins();
+    return contentSize + QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
 }
 
-// ─── Row layout (horizontal flow) ────────────────────────────────────────────
+QVector<QVector<QLayoutItem *>> FlowLayout::rowsForWidth(int availableWidth) const
+{
+    QVector<QVector<QLayoutItem *>> rows;
+    QVector<QLayoutItem *> row;
+    int usedWidth = 0;
+    for (QLayoutItem *item : items) {
+        if (!item || item->isEmpty()) {
+            continue;
+        }
+        const int width = preferredSize(item).width();
+        if (!row.isEmpty() && usedWidth + horizontalSpacing() + width > availableWidth) {
+            rows.append(row);
+            row.clear();
+            usedWidth = 0;
+        }
+        if (!row.isEmpty()) {
+            usedWidth += horizontalSpacing();
+        }
+        row.append(item);
+        usedWidth += width;
+    }
+    if (!row.isEmpty()) {
+        rows.append(row);
+    }
+    return rows;
+}
 
-/**
- * @brief Places all items into wrapping rows within @p availableWidth.
- * @return The y-coordinate of the bottom edge of the last row.
- */
+QVector<int> FlowLayout::rowWidths(const QVector<QLayoutItem *> &row, int availableWidth) const
+{
+    QVector<int> widths;
+    int usedWidth = qMax(0, static_cast<int>(row.size()) - 1) * horizontalSpacing();
+    for (const QLayoutItem *item : row) {
+        const int width = preferredSize(item).width();
+        widths.append(width);
+        usedWidth += width;
+    }
+
+    // A single wide control can shrink to its minimum and report a taller
+    // height-for-width. Multiple controls wrap using the same preferred sizes
+    // in both the measurement and placement passes.
+    if (row.size() == 1 && usedWidth > availableWidth) {
+        widths[0] = qMax(row[0]->minimumSize().width(), availableWidth);
+        return widths;
+    }
+
+    int remaining = qMax(0, availableWidth - usedWidth);
+    while (remaining > 0) {
+        int expandingCount = 0;
+        for (int i = 0; i < row.size(); ++i) {
+            if (row[i]->expandingDirections().testFlag(Qt::Horizontal) &&
+                widths[i] < row[i]->maximumSize().width()) {
+                ++expandingCount;
+            }
+        }
+        if (expandingCount == 0) {
+            break;
+        }
+        const int share = qMax(1, remaining / expandingCount);
+        for (int i = 0; i < row.size() && remaining > 0; ++i) {
+            if (!row[i]->expandingDirections().testFlag(Qt::Horizontal)) {
+                continue;
+            }
+            const int growth = qMin(qMin(share, remaining), row[i]->maximumSize().width() - widths[i]);
+            widths[i] += growth;
+            remaining -= growth;
+        }
+    }
+    return widths;
+}
+
+int FlowLayout::rowHeight(const QVector<QLayoutItem *> &row, const QVector<int> &widths) const
+{
+    int height = 0;
+    for (int i = 0; i < row.size(); ++i) {
+        height = qMax(height, itemHeight(row[i], widths[i]));
+    }
+    return height;
+}
+
 int FlowLayout::layoutAllRows(const int originX, const int originY, const int availableWidth)
 {
-    QVector<QLayoutItem *> rowItems;
-    int rowUsedWidth = 0; // Width consumed by items already in the current row.
-    int currentY = originY;
-    int rowHeight = 0;
-
-    for (QLayoutItem *item : items) {
-        if (!item || item->isEmpty()) {
-            continue;
+    const auto rows = rowsForWidth(availableWidth);
+    int y = originY;
+    for (int i = 0; i < rows.size(); ++i) {
+        if (i > 0) {
+            y += verticalSpacing();
         }
-
-        const QSize itemSize = item->sizeHint();
-        // No leading space for the first item in a row.
-        const int spaceX = rowItems.isEmpty() ? 0 : horizontalSpacing();
-
-        if (!rowItems.isEmpty() && rowUsedWidth + spaceX + itemSize.width() > availableWidth) {
-            // Current item does not fit — flush the current row, begin a new one.
-            layoutSingleRow(rowItems, originX, currentY, availableWidth);
-            rowItems.clear();
-            currentY += rowHeight + verticalSpacing();
-            rowUsedWidth = 0;
-            rowHeight = 0;
-        }
-
-        // Add the item to the current row
-        rowItems.append(item);
-        // `rowItems.size() > 1` is equivalent to "this is not the first item in the row"
-        // because we just appended above.
-        rowUsedWidth += (rowItems.size() > 1 ? horizontalSpacing() : 0) + itemSize.width();
-        rowHeight = qMax(rowHeight, itemSize.height());
+        const auto &row = rows.at(i);
+        layoutSingleRow(row, originX, y, availableWidth);
+        y += rowHeight(row, rowWidths(row, availableWidth));
     }
-
-    layoutSingleRow(rowItems, originX, currentY, availableWidth); // Flush the final row.
-    return currentY + rowHeight;
+    return y;
 }
 
-/**
- * @brief Sets the geometry for every item in @p rowItems, starting at (@p x, @p y).
- *
- * Items whose horizontal size policy includes the Expand or MinimumExpanding flag
- * share the leftover row width proportionally (like QHBoxLayout stretch), so that
- * e.g. a QLineEdit can fill remaining space while fixed-size buttons stay compact.
- *
- * Items without an expanding policy are placed at their sizeHint, clamped to maximumSize.
- */
 void FlowLayout::layoutSingleRow(const QVector<QLayoutItem *> &rowItems, int x, const int y, const int availableWidth)
 {
-    if (rowItems.isEmpty()) {
-        return;
-    }
-
-    // ── Pass 1: measure fixed width and count expanding items ────────────────
-    int fixedWidth = 0;
-    int expandingCount = 0;
-    int spacingTotal = (rowItems.size() - 1) * horizontalSpacing();
-
-    for (QLayoutItem *item : rowItems) {
-        if (!item || item->isEmpty()) {
-            continue;
-        }
-
-        QWidget *widget = item->widget();
-        const QSizePolicy::Policy hPolicy = widget ? widget->sizePolicy().horizontalPolicy() : QSizePolicy::Fixed;
-
-        if (hPolicy & QSizePolicy::ExpandFlag) {
-            ++expandingCount;
-        } else {
-            const int maxW = widget ? widget->maximumWidth() : QWIDGETSIZE_MAX;
-            fixedWidth += qMin(item->sizeHint().width(), maxW);
-        }
-    }
-
-    // Extra pixels to share among expanding items (never negative).
-    const int extra = qMax(0, availableWidth - spacingTotal - fixedWidth);
-    const int expandingShare = (expandingCount > 0) ? extra / expandingCount : 0;
-
-    // ── Pass 2: place items ──────────────────────────────────────────────────
-    for (QLayoutItem *item : rowItems) {
-        if (!item || item->isEmpty()) {
-            continue;
-        }
-
-        QWidget *widget = item->widget();
-        if (!widget) {
-            continue;
-        }
-
-        const QSizePolicy::Policy hPolicy = widget->sizePolicy().horizontalPolicy();
-        const QSize maxSize = widget->maximumSize();
-        const bool expands = hPolicy & QSizePolicy::ExpandFlag;
-
-        const int itemWidth =
-            expands ? qMin(expandingShare, maxSize.width()) : qMin(item->sizeHint().width(), maxSize.width());
-        const int itemHeight = qMin(item->sizeHint().height(), maxSize.height());
-
-        item->setGeometry(QRect(QPoint(x, y), QSize(itemWidth, itemHeight)));
-        x += itemWidth + horizontalSpacing();
+    const auto widths = rowWidths(rowItems, availableWidth);
+    for (int i = 0; i < rowItems.size(); ++i) {
+        QLayoutItem *item = rowItems[i];
+        item->setGeometry(QRect(x, y, widths[i], itemHeight(item, widths[i])));
+        x += widths[i] + horizontalSpacing();
     }
 }
 
-// ─── Column layout (vertical flow) ───────────────────────────────────────────
-
-/**
- * @brief Places all items into wrapping columns within @p availableHeight.
- * @return The x-coordinate of the right edge of the last column.
- */
 int FlowLayout::layoutAllColumns(const int originX, const int originY, const int availableHeight)
 {
-    QVector<QLayoutItem *> colItems;
-    int colUsedHeight = 0; // Height consumed by items already in the current column.
-    int currentX = originX;
-    int colWidth = 0;
-
+    QVector<QLayoutItem *> column;
+    int usedHeight = 0;
+    int x = originX;
+    int columnWidth = 0;
     for (QLayoutItem *item : items) {
         if (!item || item->isEmpty()) {
             continue;
         }
-
-        const QSize itemSize = item->sizeHint();
-        // No leading space for the first item in a column.
-        const int spaceY = colItems.isEmpty() ? 0 : verticalSpacing();
-
-        if (!colItems.isEmpty() && colUsedHeight + spaceY + itemSize.height() > availableHeight) {
-            // Current item does not fit — flush the current column, begin a new one.
-            layoutSingleColumn(colItems, currentX, originY);
-            colItems.clear();
-            currentX += colWidth + horizontalSpacing();
-            colUsedHeight = 0;
-            colWidth = 0;
+        const QSize size = preferredSize(item);
+        if (!column.isEmpty() && usedHeight + verticalSpacing() + size.height() > availableHeight) {
+            layoutSingleColumn(column, x, originY);
+            column.clear();
+            x += columnWidth + horizontalSpacing();
+            usedHeight = 0;
+            columnWidth = 0;
         }
-
-        colItems.append(item);
-        colUsedHeight += (colItems.size() > 1 ? verticalSpacing() : 0) + itemSize.height();
-        colWidth = qMax(colWidth, itemSize.width());
+        if (!column.isEmpty()) {
+            usedHeight += verticalSpacing();
+        }
+        column.append(item);
+        usedHeight += size.height();
+        columnWidth = qMax(columnWidth, size.width());
     }
-
-    layoutSingleColumn(colItems, currentX, originY); // Flush the final column.
-    return currentX + colWidth;
+    layoutSingleColumn(column, x, originY);
+    return x + columnWidth;
 }
 
-/**
- * @brief Sets the geometry for every item in @p colItems, starting at (@p x, @p y).
- *
- * Each item is placed at its sizeHint, clamped to its maximumSize.
- */
 void FlowLayout::layoutSingleColumn(const QVector<QLayoutItem *> &colItems, const int x, int y)
 {
     for (QLayoutItem *item : colItems) {
-        if (!item || item->isEmpty()) {
-            qCDebug(FlowLayoutLog) << "Skipping null or empty item in column.";
-            continue;
-        }
-
-        QWidget *widget = item->widget();
-        if (!widget) {
-            qCDebug(FlowLayoutLog) << "Item has no widget; skipping.";
-            continue;
-        }
-
-        qCDebug(FlowLayoutLog) << "Widget:" << widget->metaObject()->className() << "sizeHint:" << widget->sizeHint()
-                               << "maximumSize:" << widget->maximumSize() << "minimumSize:" << widget->minimumSize();
-
-        const QSize maxSize = widget->maximumSize();
-        const int itemWidth = qMin(item->sizeHint().width(), maxSize.width());
-        const int itemHeight = qMin(item->sizeHint().height(), maxSize.height());
-
-        qCDebug(FlowLayoutLog) << "Placing at x=" << x << "y=" << y << "w=" << itemWidth << "h=" << itemHeight;
-
-        // Set the item's geometry based on the computed size and position
-        item->setGeometry(QRect(QPoint(x, y), QSize(itemWidth, itemHeight)));
-        y += itemHeight + verticalSpacing();
+        const QSize size = preferredSize(item);
+        item->setGeometry(QRect(QPoint(x, y), size));
+        y += size.height() + verticalSpacing();
     }
 }
 
-/**
- * @brief Preferred size for horizontal flow: all items in a single row (unconstrained).
- *
- * The actual displayed height is determined by heightForWidth() once Qt knows the
- * real available width.
- */
 QSize FlowLayout::calculateSizeHintHorizontal() const
 {
-    int totalWidth = 0;
-    int maxHeight = 0;
-
+    int width = 0;
+    int height = 0;
+    bool first = true;
     for (const QLayoutItem *item : items) {
         if (!item || item->isEmpty()) {
             continue;
         }
-        const QSize s = item->sizeHint();
-        if (totalWidth > 0) {
-            totalWidth += horizontalSpacing();
+        const QSize size = preferredSize(item);
+        if (!first) {
+            width += horizontalSpacing();
         }
-        totalWidth += s.width();
-        maxHeight = qMax(maxHeight, s.height());
+        first = false;
+        width += size.width();
+        height = qMax(height, itemHeight(item, size.width()));
     }
-    return QSize(totalWidth, maxHeight);
+    return QSize(width, height);
 }
 
-/**
- * @brief Minimum size for horizontal flow: the largest single item.
- *
- * This guarantees we can always display at least one item per row.
- */
 QSize FlowLayout::calculateMinimumSizeHorizontal() const
 {
     QSize size(0, 0);
     for (const QLayoutItem *item : items) {
-        if (!item || item->isEmpty()) {
-            qCDebug(FlowLayoutLog) << "Skipping empty item.";
-            continue;
+        if (item && !item->isEmpty()) {
+            size = size.expandedTo(item->minimumSize());
         }
-        size = size.expandedTo(item->minimumSize());
     }
     return size;
 }
 
-/**
- * @brief Preferred size for vertical flow: all items in a single column (unconstrained).
- */
 QSize FlowLayout::calculateSizeHintVertical() const
 {
-    int maxWidth = 0;
-    int totalHeight = 0;
-
+    int width = 0;
+    int height = 0;
+    bool first = true;
     for (const QLayoutItem *item : items) {
         if (!item || item->isEmpty()) {
-            qCDebug(FlowLayoutLog) << "Skipping empty item.";
             continue;
         }
-        const QSize s = item->sizeHint();
-        if (totalHeight > 0) {
-            totalHeight += verticalSpacing();
+        const QSize size = preferredSize(item);
+        if (!first) {
+            height += verticalSpacing();
         }
-        totalHeight += s.height();
-        maxWidth = qMax(maxWidth, s.width());
+        first = false;
+        height += size.height();
+        width = qMax(width, size.width());
     }
-    return QSize(maxWidth, totalHeight);
+    return QSize(width, height);
 }
 
-/**
- * @brief Minimum size for vertical flow: the largest single item.
- */
 QSize FlowLayout::calculateMinimumSizeVertical() const
 {
-    QSize size(0, 0);
-    for (const QLayoutItem *item : items) {
-        if (!item || item->isEmpty()) {
-            qCDebug(FlowLayoutLog) << "Skipping empty item.";
-            continue;
-        }
-        size = size.expandedTo(item->minimumSize());
-    }
-    return size;
+    return calculateMinimumSizeHorizontal();
 }
 
-/**
- * @brief Adds a new item to the layout.
- * @param item The layout item to add.
- */
 void FlowLayout::addItem(QLayoutItem *item)
 {
     if (item) {
         items.append(item);
+        invalidate();
     }
 }
 
 void FlowLayout::insertWidgetAtIndex(QWidget *toInsert, int index)
 {
+    if (!toInsert) {
+        return;
+    }
     addChildWidget(toInsert);
     const int bounded = qBound(0, index, static_cast<int>(items.size()));
     items.insert(bounded, new QWidgetItem(toInsert));
     invalidate();
 }
 
-/**
- * @brief Retrieves the count of items in the layout.
- * @return The number of layout items.
- */
 int FlowLayout::count() const
 {
     return static_cast<int>(items.size());
 }
 
-/**
- * @brief Returns the layout item at the specified index.
- * @param index The index of the item to retrieve.
- * @return A pointer to the item at the specified index, or nullptr if out of range.
- */
 QLayoutItem *FlowLayout::itemAt(const int index) const
 {
     return (index >= 0 && index < items.size()) ? items.value(index) : nullptr;
 }
 
-/**
- * @brief Removes and returns the item at the specified index.
- * @param index The index of the item to remove.
- * @return A pointer to the removed item, or nullptr if out of range.
- */
 QLayoutItem *FlowLayout::takeAt(const int index)
 {
-    return (index >= 0 && index < items.size()) ? items.takeAt(index) : nullptr;
+    if (index < 0 || index >= items.size()) {
+        return nullptr;
+    }
+    QLayoutItem *item = items.takeAt(index);
+    invalidate();
+    return item;
 }
 
-/**
- * @brief Gets the horizontal spacing between items.
- * @return The horizontal spacing if set, otherwise a smart default.
- */
 int FlowLayout::horizontalSpacing() const
 {
     return (horizontalMargin >= 0) ? horizontalMargin : smartSpacing(QStyle::PM_LayoutHorizontalSpacing);
 }
 
-/**
- * @brief Gets the vertical spacing between items.
- * @return The vertical spacing if set, otherwise a smart default.
- */
 int FlowLayout::verticalSpacing() const
 {
     return (verticalMargin >= 0) ? verticalMargin : smartSpacing(QStyle::PM_LayoutVerticalSpacing);
 }
 
-/**
- * @brief Calculates smart spacing based on the parent widget style.
- * @param pm The pixel metric to calculate.
- * @return The calculated spacing value.
- */
 int FlowLayout::smartSpacing(const QStyle::PixelMetric pm) const
 {
     QObject *p = parent();
     if (!p) {
-        return -1;
+        return 0;
     }
     if (p->isWidgetType()) {
         const auto *pw = static_cast<QWidget *>(p);
-        return pw->style()->pixelMetric(pm, nullptr, pw);
+        return qMax(0, pw->style()->pixelMetric(pm, nullptr, pw));
     }
-    return static_cast<QLayout *>(p)->spacing();
+    return qMax(0, static_cast<QLayout *>(p)->spacing());
 }
