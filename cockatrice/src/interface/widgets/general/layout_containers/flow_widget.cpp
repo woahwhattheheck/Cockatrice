@@ -82,6 +82,15 @@ FlowWidget::FlowWidget(QWidget *parent,
     }
 }
 
+FlowWidget::~FlowWidget()
+{
+    // QWidget destroys child widgets before QObject disconnects their signals.
+    // Remove callbacks while our navigation registry is still alive.
+    while (!navigationConnections.isEmpty()) {
+        removeNavigation(navigationConnections.constBegin().key());
+    }
+}
+
 /**
  * @brief Adds a widget to the flow layout within the FlowWidget.
  *

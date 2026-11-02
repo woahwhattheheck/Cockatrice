@@ -34,6 +34,7 @@ public:
                Qt::Orientation orientation,
                Qt::ScrollBarPolicy horizontalPolicy,
                Qt::ScrollBarPolicy verticalPolicy);
+    ~FlowWidget() override;
 
     void addWidget(QWidget *widget_to_add);
     void addNavigableWidget(QWidget *widget_to_add);
