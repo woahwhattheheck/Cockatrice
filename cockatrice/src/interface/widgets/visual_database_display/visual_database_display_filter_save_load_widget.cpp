@@ -133,7 +133,7 @@ VisualDatabaseDisplayFilterSaveLoadWidget::VisualDatabaseDisplayFilterSaveLoadWi
     connect(searchInput, &QLineEdit::textChanged, this, &VisualDatabaseDisplayFilterSaveLoadWidget::applySearchFilter);
 
     // File list container
-    fileListWidget = new FlowWidget(this, Qt::Horizontal, Qt::ScrollBarAlwaysOff, Qt::ScrollBarAsNeeded);
+    fileListWidget = new FlowWidget(this, Qt::Horizontal, Qt::ScrollBarAsNeeded, Qt::ScrollBarAsNeeded);
     layout->addWidget(fileListWidget);
 
     // Input for filter filename
