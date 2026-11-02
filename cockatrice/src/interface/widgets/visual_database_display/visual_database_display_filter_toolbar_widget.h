@@ -8,6 +8,11 @@
 class VisualDatabaseDisplayTagFilterWidget;
 class VisualDatabaseDisplayWidget;
 class DeckListModel;
+class FilterTreeModel;
+class QLineEdit;
+class QSortFilterProxyModel;
+class QToolButton;
+class QTreeView;
 class QComboBox;
 class QGroupBox;
 class QLabel;
@@ -57,6 +62,27 @@ private:
     VisualDatabaseDisplayFormatLegalityFilterWidget *formatLegalityWidget;
     SettingsButtonWidget *quickFilterTagWidget;
     VisualDatabaseDisplayTagFilterWidget *tagFilterWidget;
+
+    SettingsButtonWidget *quickFilterCurrentWidget = nullptr;
+    QWidget *currentFiltersPanel = nullptr;
+    QSortFilterProxyModel *currentFiltersProxy = nullptr;
+    QLineEdit *currentFiltersSearch = nullptr;
+    QTreeView *currentFiltersTree = nullptr;
+    QLabel *currentFiltersExplanation = nullptr;
+    QLabel *currentFiltersCountLabel = nullptr;
+    QLabel *currentFiltersEmptyLabel = nullptr;
+    QToolButton *currentFiltersExpandButton = nullptr;
+    QToolButton *currentFiltersCollapseButton = nullptr;
+    QToolButton *currentFiltersPauseButton = nullptr;
+    QToolButton *currentFiltersResumeButton = nullptr;
+    bool currentFiltersRefreshPending = false;
+    bool currentFiltersExpandPending = false;
+
+    void initializeCurrentFilters(FilterTreeModel *filterModel);
+    void retranslateCurrentFilters();
+    void scheduleCurrentFiltersRefresh(bool expandTree);
+    void refreshCurrentFilters(bool expandTree);
+    void setCurrentFiltersPaused(bool paused);
 
     int fullWidthHint = 0;
     void updateCompactMode(int availableWidth);

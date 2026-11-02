@@ -66,6 +66,7 @@ void SettingsButtonWidget::setButtonText(const QString &text)
     button->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
     button->setMinimumWidth(32); // icon-only fallback minimum
+    setCompact(compact);
 }
 
 void SettingsButtonWidget::setCompact(bool _compact)
@@ -77,8 +78,8 @@ void SettingsButtonWidget::setCompact(bool _compact)
     } else {
         button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         button->setText(buttonText);
-        button->setFixedWidth(QWIDGETSIZE_MAX); // release fixed width
         button->setMinimumWidth(32);
+        button->setMaximumWidth(QWIDGETSIZE_MAX);
         button->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     }
 }
@@ -87,32 +88,12 @@ void SettingsButtonWidget::togglePopup()
 {
     if (popup->isVisible()) {
         popup->close();
-    } else {
-        popup->adjustSizeToFitScreen(); // Ensure proper size
-
-        QSize popupSize = popup->size();
-        QPoint buttonGlobalPos = button->mapToGlobal(QPoint(0, button->height()));
-
-        QScreen *screen = QApplication::screenAt(buttonGlobalPos);
-        QRect screenGeom = screen ? screen->availableGeometry() : QApplication::primaryScreen()->availableGeometry();
-
-        int x = buttonGlobalPos.x();
-        int y = buttonGlobalPos.y();
-
-        // Adjust position to stay within screen bounds
-        if (x + popupSize.width() > screenGeom.right()) {
-            x = buttonGlobalPos.x() - popupSize.width() + button->width();
-        }
-
-        if (y + popupSize.height() > screenGeom.bottom()) {
-            y = buttonGlobalPos.y() - popupSize.height() - button->height();
-        }
-
-        popup->move(x, y);
-        popup->show();
-        popup->setFocus();
-        button->setChecked(true);
+        return;
     }
+    popup->adjustSizeToFitScreen(button);
+    popup->show();
+    popup->setFocus();
+    button->setChecked(true);
 }
 
 void SettingsButtonWidget::onPopupClosed() const

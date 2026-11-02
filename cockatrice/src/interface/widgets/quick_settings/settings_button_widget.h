@@ -47,7 +47,7 @@ private:
     QHBoxLayout *layout;
     QToolButton *button;
     QString buttonText;
-    bool compact;
+    bool compact = false;
 
 public:
     SettingsPopupWidget *popup;
