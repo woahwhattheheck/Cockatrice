@@ -24,22 +24,28 @@ public:
 
     QSize sizeHint() const override;
 
+public slots:
+    void retranslateUi();
+
 protected:
     void mousePressEvent(QMouseEvent *event) override;
 
 private slots:
     void loadFilter();
+    void previewFilter();
     void deleteFilter();
 
 signals:
     void filterClicked();
     void filterLoadRequested(const QString &filename);
+    void filterPreviewRequested(const QString &filename);
     void filterDeleted(const QString &filename);
 
 private:
     QString filterFilename;
     FilterTreeModel *filterModel;
     QPushButton *filterButton; // Button for the filter text
+    QPushButton *previewButton;
     QPushButton *closeButton;  // Close button to delete the filter
 };
 
