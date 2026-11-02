@@ -7,17 +7,19 @@
 #ifndef VISUAL_DATABASE_DISPLAY_FILTER_SAVE_LOAD_WIDGET_H
 #define VISUAL_DATABASE_DISPLAY_FILTER_SAVE_LOAD_WIDGET_H
 
-#include <QList>
-#include <QMap>
-#include <QPair>
+#include <QByteArray>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
+#include <libcockatrice/filters/filter_preset.h>
+#include <optional>
 #include <qtmetamacros.h>
 
 class FilterTreeModel;
 class FlowWidget;
 class QLineEdit;
+class QMessageBox;
 class QPushButton;
 class QVBoxLayout;
 
@@ -29,15 +31,15 @@ public:
 
     void saveFilter();
     void loadFilter(const QString &filename);
+    void previewFilter(const QString &filename);
     void applySearchFilter(const QString &text);
     void refreshFilterList();
-    void deleteFilter(const QString &filename, QPushButton *deleteButton);
 
 public slots:
     void retranslateUi();
 
 private:
-    FilterTreeModel *filterModel;
+    QPointer<FilterTreeModel> filterModel;
 
     QVBoxLayout *layout;
     QLineEdit *searchInput;
@@ -46,7 +48,12 @@ private:
     QPushButton *saveButton;
     QStringList allFilterFiles;
 
-    QMap<QString, QPair<QPushButton *, QPushButton *>> fileButtons;
+    QPointer<QMessageBox> overwriteDialog;
+
+    void updateSaveButton();
+    void writeFilter(const QString &filename, const QString &filePath, const QByteArray &data);
+    std::optional<FilterPreset> readFilterPreset(const QString &filename, const QString &errorTitle);
+    QString colorModeLabel(const QString &mode) const;
 };
 
 #endif // VISUAL_DATABASE_DISPLAY_FILTER_SAVE_LOAD_WIDGET_H
