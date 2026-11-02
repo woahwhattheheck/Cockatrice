@@ -1164,8 +1164,10 @@ void TabGame::createReplayMenuItems()
     aNextTurn = nullptr;
     aReverseTurn = nullptr;
     aRemoveLocalArrows = nullptr;
-    aRotateViewCW = nullptr;
-    aRotateViewCCW = nullptr;
+    aRotateViewCW = new QAction(this);
+    connect(aRotateViewCW, &QAction::triggered, this, &TabGame::actRotateViewCW);
+    aRotateViewCCW = new QAction(this);
+    connect(aRotateViewCCW, &QAction::triggered, this, &TabGame::actRotateViewCCW);
     aResetLayout = nullptr;
     aGameInfo = nullptr;
     aCopyGameLink = nullptr;
@@ -1177,6 +1179,9 @@ void TabGame::createReplayMenuItems()
 
     phasesMenu = nullptr;
     gameMenu = new QMenu(this);
+    gameMenu->addAction(aRotateViewCW);
+    gameMenu->addAction(aRotateViewCCW);
+    gameMenu->addSeparator();
     gameMenu->addAction(aLeaveGame);
 
     aCardMenu = nullptr;
