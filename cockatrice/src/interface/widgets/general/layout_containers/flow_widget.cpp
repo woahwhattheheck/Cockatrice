@@ -14,6 +14,7 @@
 #include <QLayoutItem>
 #include <QList>
 #include <QMessageLogger>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSize>
@@ -81,6 +82,15 @@ FlowWidget::FlowWidget(QWidget *parent,
     }
 }
 
+FlowWidget::~FlowWidget()
+{
+    // QWidget destroys child widgets before QObject disconnects their signals.
+    // Remove callbacks while our navigation registry is still alive.
+    while (!navigationConnections.isEmpty()) {
+        removeNavigation(navigationConnections.constBegin().key());
+    }
+}
+
 /**
  * @brief Adds a widget to the flow layout within the FlowWidget.
  *
@@ -93,6 +103,10 @@ FlowWidget::FlowWidget(QWidget *parent,
  */
 void FlowWidget::addWidget(QWidget *widget_to_add)
 {
+    if (!widget_to_add) {
+        return;
+    }
+    removeNavigation(widget_to_add);
     flowLayout->addWidget(widget_to_add);
 }
 
@@ -109,19 +123,47 @@ void FlowWidget::addWidget(QWidget *widget_to_add)
  */
 void FlowWidget::addNavigableWidget(QWidget *widget_to_add)
 {
-    widget_to_add->installEventFilter(this);
+    if (!widget_to_add) {
+        return;
+    }
     flowLayout->addWidget(widget_to_add);
+    if (!navigationConnections.contains(widget_to_add)) {
+        navigationConnections.insert(widget_to_add, connect(widget_to_add, &QObject::destroyed, this,
+                                                           [this, widget_to_add] {
+                                                               navigationConnections.remove(widget_to_add);
+                                                           }));
+    }
+    widget_to_add->installEventFilter(this);
 }
 
 void FlowWidget::insertWidgetAtIndex(QWidget *toInsert, int index)
 {
+    if (!toInsert) {
+        return;
+    }
+    removeNavigation(toInsert);
     flowLayout->insertWidgetAtIndex(toInsert, index);
     update();
 }
 
-void FlowWidget::removeWidget(QWidget *widgetToRemove) const
+void FlowWidget::removeWidget(QWidget *widgetToRemove)
 {
+    if (!widgetToRemove) {
+        return;
+    }
+    removeNavigation(widgetToRemove);
     flowLayout->removeWidget(widgetToRemove);
+}
+
+void FlowWidget::removeNavigation(QWidget *widget)
+{
+    const auto it = navigationConnections.find(widget);
+    if (it == navigationConnections.end()) {
+        return;
+    }
+    widget->removeEventFilter(this);
+    disconnect(it.value());
+    navigationConnections.erase(it);
 }
 
 /**
@@ -131,6 +173,9 @@ void FlowWidget::removeWidget(QWidget *widgetToRemove) const
  */
 void FlowWidget::clearLayout()
 {
+    for (QWidget *widget : navigationConnections.keys()) {
+        removeNavigation(widget);
+    }
     if (flowLayout) {
         QtUtils::clearLayoutRec(flowLayout);
     } else {
@@ -199,21 +244,32 @@ QLayoutItem *FlowWidget::itemAt(int index) const
 
 bool FlowWidget::eventFilter(QObject *watched, QEvent *event)
 {
-    // Arrow-key navigation is deliberately scoped to widgets that opted in via
-    // addNavigableWidget(). Handling arrow keys in keyPressEvent() as well would
-    // also catch the events ordinary children (QLineEdit, ...) ignore and move
-    // focus away from the control the user is typing in.
-    if (event->type() == QEvent::KeyPress && moveFocus(static_cast<QKeyEvent *>(event))) {
+    auto *widget = qobject_cast<QWidget *>(watched);
+    if (!widget || !navigationConnections.contains(widget)) {
+        return QWidget::eventFilter(watched, event);
+    }
+
+    // Direct reparenting can remove an item without calling removeWidget().
+    // The old flow must stop intercepting its events in its new owner.
+    if (event->type() == QEvent::ParentChange && widget->parentWidget() != container) {
+        removeNavigation(widget);
+        return QWidget::eventFilter(watched, event);
+    }
+
+    // Only the opted-in item itself handles navigation. An editor nested inside
+    // it keeps its own arrow keys, including any events that bubble to a parent.
+    if (event->type() == QEvent::KeyPress && widget->hasFocus() && flowLayout->indexOf(widget) >= 0 &&
+        moveFocus(static_cast<QKeyEvent *>(event), widget)) {
         return true;
     }
     return QWidget::eventFilter(watched, event);
 }
 
-bool FlowWidget::moveFocus(QKeyEvent *event)
+bool FlowWidget::moveFocus(QKeyEvent *event, QWidget *source)
 {
-    // Keyboard navigation between the flow items: arrow keys move focus just
-    // like clicking the sibling tiles would. Only items that can take keyboard
-    // focus (e.g. the deck-preview tiles in shared-deck links) are visited.
+    if (event->modifiers() != Qt::NoModifier) {
+        return false;
+    }
     const bool moveForward = event->key() == Qt::Key_Right || event->key() == Qt::Key_Down;
     const bool moveBackward = event->key() == Qt::Key_Left || event->key() == Qt::Key_Up;
     if (!moveForward && !moveBackward) {
@@ -222,32 +278,27 @@ bool FlowWidget::moveFocus(QKeyEvent *event)
 
     QList<QWidget *> focusableItems;
     for (int i = 0; i < flowLayout->count(); ++i) {
-        QWidget *item = flowLayout->itemAt(i)->widget();
-        if (item != nullptr && (item->focusPolicy() & Qt::TabFocus)) {
+        QLayoutItem *layoutItem = flowLayout->itemAt(i);
+        QWidget *item = layoutItem ? layoutItem->widget() : nullptr;
+        if (item && navigationConnections.contains(item) && item->isEnabled() && item->isVisibleTo(container) &&
+            (item->focusPolicy() & Qt::TabFocus)) {
             focusableItems.append(item);
         }
     }
 
-    if (focusableItems.isEmpty()) {
+    const int currentIndex = focusableItems.indexOf(source);
+    if (currentIndex < 0 || focusableItems.size() < 2) {
         return false;
     }
-
-    int currentIndex = -1;
-    for (int i = 0; i < focusableItems.size(); ++i) {
-        if (focusableItems.at(i)->hasFocus()) {
-            currentIndex = i;
-            break;
-        }
-    }
-
     const int delta = moveForward ? 1 : -1;
-    int nextIndex;
-    if (currentIndex < 0) {
-        nextIndex = moveForward ? 0 : focusableItems.size() - 1;
-    } else {
-        nextIndex = (currentIndex + delta + focusableItems.size()) % focusableItems.size();
+    const int nextIndex = (currentIndex + delta + focusableItems.size()) % focusableItems.size();
+    QPointer<QWidget> target(focusableItems.at(nextIndex));
+    QPointer<FlowWidget> guard(this);
+    target->setFocus(moveForward ? Qt::TabFocusReason : Qt::BacktabFocusReason);
+    // Focus callbacks may destroy either widget.
+    if (guard && target && scrollArea) {
+        scrollArea->ensureWidgetVisible(target);
     }
-    focusableItems.value(nextIndex)->setFocus();
     event->accept();
     return true;
 }

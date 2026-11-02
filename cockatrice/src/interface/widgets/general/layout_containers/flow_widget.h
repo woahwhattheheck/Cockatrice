@@ -8,7 +8,9 @@
 #ifndef FLOW_WIDGET_H
 #define FLOW_WIDGET_H
 
+#include <QHash>
 #include <QLoggingCategory>
+#include <QMetaObject>
 #include <QWidget>
 #include <qlogging.h>
 #include <qnamespace.h>
@@ -32,11 +34,12 @@ public:
                Qt::Orientation orientation,
                Qt::ScrollBarPolicy horizontalPolicy,
                Qt::ScrollBarPolicy verticalPolicy);
+    ~FlowWidget() override;
 
     void addWidget(QWidget *widget_to_add);
     void addNavigableWidget(QWidget *widget_to_add);
     void insertWidgetAtIndex(QWidget *toInsert, int index);
-    void removeWidget(QWidget *widgetToRemove) const;
+    void removeWidget(QWidget *widgetToRemove);
     void clearLayout();
 
     [[nodiscard]] int count() const;
@@ -55,12 +58,14 @@ protected:
 private:
     /// @brief Moves keyboard focus to an adjacent flow item for an arrow-key event.
     /// @return True when the event was an arrow key and was handled.
-    bool moveFocus(QKeyEvent *event);
+    bool moveFocus(QKeyEvent *event, QWidget *source);
+    void removeNavigation(QWidget *widget);
 
     Qt::Orientation flowDirection;
     QHBoxLayout *mainLayout;
     FlowLayout *flowLayout;
     QWidget *container;
+    QHash<QWidget *, QMetaObject::Connection> navigationConnections;
 };
 
 #endif // FLOW_WIDGET_H
