@@ -23,6 +23,7 @@
 #include <QLoggingCategory>
 #include <QMap>
 #include <QMessageLogger>
+#include <QMetaObject>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QSet>
@@ -95,9 +96,13 @@ bool Servatrice_DatabaseInterface::initDatabase(const QString &type,
 
 bool Servatrice_DatabaseInterface::openDatabase()
 {
-    if (sqlDatabase.isOpen()) {
-        sqlDatabase.close();
-    }
+    databaseReady = false;
+
+    // Only a connection boundary invalidates cached query objects. In particular,
+    // execSqlQuery() leaves a failed query alive for its caller to inspect.
+    qDeleteAll(preparedStatements);
+    preparedStatements.clear();
+    sqlDatabase.close();
 
     const QString poolStr = instanceId == -1 ? QString("main") : QString("pool %1").arg(instanceId);
     qCDebug(DatabaseInterfaceLog).noquote() << poolStr << "Opening database...";
@@ -106,36 +111,21 @@ bool Servatrice_DatabaseInterface::openDatabase()
         return false;
     }
 
-    QSqlQuery *versionQuery = prepareQuery("select version from {prefix}_schema_version limit 1");
-    if (!execSqlQuery(versionQuery)) {
-        qCCritical(DatabaseInterfaceLog) << poolStr << "Error opening database: unable to load database schema version"
-                                         << "(hint: ensure the cockatrice_schema_version exists)";
+    // Initialization probes must not call execSqlQuery(), whose recovery belongs
+    // to the next command boundary. A missing schema table is one failed open,
+    // not a recursive sequence of reconnects.
+    if (!validateDatabase()) {
+        sqlDatabase.close();
         return false;
     }
 
-    if (versionQuery->next()) {
-        const int dbversion = versionQuery->value(0).toInt();
-        const int expectedversion = DATABASE_SCHEMA_VERSION;
-        if (dbversion < expectedversion) {
-            qCCritical(DatabaseInterfaceLog) << poolStr
-                                             << "Error opening database: the database schema version is too old, you "
-                                                "need to run the migrations to update it from version"
-                                             << dbversion << "to version" << expectedversion;
-            return false;
-        } else if (dbversion > expectedversion) {
-            qCCritical(DatabaseInterfaceLog)
-                << poolStr << "Error opening database: the database schema version" << dbversion
-                << "is too new, you need to update Servatrice" << "(Currently running Servatrice actually uses version"
-                << expectedversion << ")";
-            return false;
-        }
-    } else {
-        qCCritical(DatabaseInterfaceLog) << poolStr
-                                         << "Error opening database: unable to load database schema version (hint: "
-                                            "ensure the cockatrice_schema_version contains a single record)";
-        return false;
-    }
+    databaseReady = true;
+    return true;
+}
 
+bool Servatrice_DatabaseInterface::validateDatabase()
+{
+    const QString poolStr = instanceId == -1 ? QString("main") : QString("pool %1").arg(instanceId);
     if (sqlDatabase.driverName() != "QMYSQL") {
         qCCritical(DatabaseInterfaceLog)
             << poolStr
@@ -145,42 +135,75 @@ bool Servatrice_DatabaseInterface::openDatabase()
         return false;
     }
 
+    QSqlQuery versionQuery(sqlDatabase);
+    const QString versionSql =
+        QString("select version from %1_schema_version limit 2").arg(server->getDbPrefix());
+    if (!versionQuery.exec(versionSql) || !versionQuery.next()) {
+        qCCritical(DatabaseInterfaceLog) << poolStr << "Error opening database: unable to load database schema version"
+                                         << "(hint: ensure the schema_version table contains a single record)"
+                                         << versionQuery.lastError().text();
+        return false;
+    }
+
+    bool versionOk = false;
+    const int dbversion = versionQuery.value(0).toInt(&versionOk);
+    const bool extraVersion = versionQuery.next();
+    if (!versionOk || extraVersion || versionQuery.lastError().isValid()) {
+        qCCritical(DatabaseInterfaceLog) << poolStr
+                                         << "Error opening database: schema_version must contain one valid version";
+        return false;
+    }
+    versionQuery.finish();
+
+    const int expectedversion = DATABASE_SCHEMA_VERSION;
+    if (dbversion < expectedversion) {
+        qCCritical(DatabaseInterfaceLog) << poolStr
+                                         << "Error opening database: the database schema version is too old, you "
+                                            "need to run the migrations to update it from version"
+                                         << dbversion << "to version" << expectedversion;
+        return false;
+    }
+    if (dbversion > expectedversion) {
+        qCCritical(DatabaseInterfaceLog)
+            << poolStr << "Error opening database: the database schema version" << dbversion
+            << "is too new, you need to update Servatrice" << "(Currently running Servatrice actually uses version"
+            << expectedversion << ")";
+        return false;
+    }
+
     bool strictModeCheckOk = false;
     const bool strictModeEnabled = isStrictModeEnabled(strictModeCheckOk);
     if (!strictModeCheckOk) {
         qCCritical(DatabaseInterfaceLog) << poolStr
-                                         << "Error opening database: unable to determine whether MySQL/MariaDB strict "
-                                            "mode is enabled";
+                                         << "Error opening database: unable to determine the connection's "
+                                            "MySQL/MariaDB session SQL mode";
         return false;
     }
     if (strictModeEnabled) {
         qCCritical(DatabaseInterfaceLog) << poolStr
-                                         << "Error opening database: MySQL/MariaDB strict mode is enabled, which "
-                                            "breaks most Servatrice database operations. Please disable strict mode "
-                                            "by removing STRICT_TRANS_TABLES and STRICT_ALL_TABLES from sql_mode, "
-                                            "for example by adding 'sql_mode=NO_ENGINE_SUBSTITUTION' under [mysqld] "
-                                            "in your my.cnf (or my.ini on Windows) and restarting the database "
-                                            "server.";
+                                         << "Error opening database: MySQL/MariaDB session strict mode is enabled, "
+                                            "which breaks most Servatrice database operations. Please disable "
+                                            "STRICT_TRANS_TABLES and STRICT_ALL_TABLES for Servatrice connections, "
+                                            "for example by configuring 'sql_mode=NO_ENGINE_SUBSTITUTION' "
+                                            "under [mysqld] in my.cnf (or my.ini), then reconnecting after the "
+                                            "database server has loaded that configuration.";
         return false;
     }
 
-    // reset all prepared statements
-    qDeleteAll(preparedStatements);
-    preparedStatements.clear();
     return true;
 }
 
 bool Servatrice_DatabaseInterface::isStrictModeEnabled(bool &ok) const
 {
-    ok = true;
+    ok = false;
 
     QSqlQuery query(sqlDatabase);
-    if (!query.exec("SELECT @@GLOBAL.sql_mode")) {
-        ok = false;
+    if (!query.exec("SELECT @@SESSION.sql_mode") || !query.next() || query.value(0).isNull()) {
         return false;
     }
 
-    const QStringList modes = query.next() ? query.value(0).toString().split(',') : QStringList();
+    const QStringList modes = query.value(0).toString().split(',', Qt::SkipEmptyParts);
+    ok = true;
     for (const QString &mode : modes) {
         if (mode.trimmed() == "STRICT_TRANS_TABLES" || mode.trimmed() == "STRICT_ALL_TABLES") {
             return true;
@@ -194,21 +217,27 @@ bool Servatrice_DatabaseInterface::checkSql()
     if (!sqlDatabase.isValid()) {
         return false;
     }
-
-    auto query = QSqlQuery(sqlDatabase);
-    if (query.exec("select 1") && !query.isActive()) {
+    if (!databaseReady || !sqlDatabase.isOpen()) {
         return openDatabase();
     }
 
-    if (query.lastError().isValid()) {
-        const auto &poolStr = instanceId == -1 ? QString("main") : QString("pool %1").arg(instanceId);
-        qCCritical(DatabaseInterfaceLog) << poolStr << "Error executing query:" << query.lastError().text();
-
-        sqlDatabase.close();
-        return openDatabase();
+    bool healthy = false;
+    QString probeError;
+    {
+        QSqlQuery query(sqlDatabase);
+        healthy = query.exec("select 1") && query.next() && query.value(0).toInt() == 1;
+        if (!healthy) {
+            probeError = query.lastError().text();
+        }
     }
 
-    return true;
+    if (healthy) {
+        return true;
+    }
+
+    const QString poolStr = instanceId == -1 ? QString("main") : QString("pool %1").arg(instanceId);
+    qCCritical(DatabaseInterfaceLog) << poolStr << "Database health probe failed:" << probeError;
+    return openDatabase();
 }
 
 QSqlQuery *Servatrice_DatabaseInterface::prepareQuery(const QString &queryText)
@@ -220,7 +249,9 @@ QSqlQuery *Servatrice_DatabaseInterface::prepareQuery(const QString &queryText)
     QString prefixedQueryText = queryText;
     prefixedQueryText.replace("{prefix}", server->getDbPrefix());
     auto *query = new QSqlQuery(sqlDatabase);
-    query->prepare(prefixedQueryText);
+    if (databaseReady) {
+        query->prepare(prefixedQueryText);
+    }
 
     preparedStatements.insert(queryText, query);
     return query;
@@ -228,14 +259,47 @@ QSqlQuery *Servatrice_DatabaseInterface::prepareQuery(const QString &queryText)
 
 bool Servatrice_DatabaseInterface::execSqlQuery(QSqlQuery *query)
 {
+    if (!databaseReady || !sqlDatabase.isOpen()) {
+        databaseReady = false;
+        queueReconnect();
+        return false;
+    }
+
     if (query->exec()) {
         return true;
     }
+
     const QString poolStr = instanceId == -1 ? QString("main") : QString("pool %1").arg(instanceId);
     qCCritical(DatabaseInterfaceLog) << poolStr << "Error executing query:" << query->lastError().text();
+
+    // A failed command stays failed. Reconnecting on this stack would delete
+    // queries still held by callers and could execute the rest of an interrupted
+    // transaction on a fresh connection.
+    databaseReady = false;
     sqlDatabase.close();
-    openDatabase();
+    queueReconnect();
     return false;
+}
+
+void Servatrice_DatabaseInterface::queueReconnect()
+{
+    if (reconnectPending || !sqlDatabase.isValid()) {
+        return;
+    }
+
+    // Retry once after the current operation returns to the owning event loop.
+    // An earlier checkSql() recovery supersedes this attempt. If the database is
+    // still unavailable, a later query can request another attempt.
+    reconnectPending = true;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            reconnectPending = false;
+            if (!databaseReady || !sqlDatabase.isOpen()) {
+                openDatabase();
+            }
+        },
+        Qt::QueuedConnection);
 }
 
 bool Servatrice_DatabaseInterface::usernameIsValid(const QString &user, QString &error)
@@ -592,16 +656,12 @@ bool Servatrice_DatabaseInterface::checkUserIsIdBanned(const QString &clientId,
                      " b.minutes <=> 0,"
                      " b.visible_reason"
                      " from {prefix}_bans b"
-                     " where"
-                     " b.time_from = (select max(c.time_from)"
-                     " from {prefix}_bans c"
-                     " where c.clientid = :id)"
-                     " and b.clientid = :id2");
+                     " where b.clientid = :id"
+                     " order by b.time_from desc, b.id desc limit 1");
 
     idBanQuery->bindValue(":id", clientId);
-    idBanQuery->bindValue(":id2", clientId);
     if (!execSqlQuery(idBanQuery)) {
-        qCWarning(DatabaseInterfaceLog) << "Id ban check failed: SQL error." << idBanQuery->lastError();
+        qCWarning(DatabaseInterfaceLog) << "Id ban check failed: SQL error.";
         return false;
     }
 
@@ -622,14 +682,18 @@ bool Servatrice_DatabaseInterface::checkUserIsNameBanned(const QString &userName
                                                          QString &banReason,
                                                          int &banSecondsRemaining)
 {
+    // A registered ban follows the account, even when its original name is
+    // reused. Unregistered names keep the existing name-based behavior.
     QSqlQuery *nameBanQuery =
         prepareQuery("select timestampdiff(second, now(), date_add(b.time_from, interval b.minutes minute)), b.minutes "
-                     "<=> 0, b.visible_reason from {prefix}_bans b where b.time_from = (select max(c.time_from) from "
-                     "{prefix}_bans c where c.user_name = :name2) and b.user_name = :name1");
-    nameBanQuery->bindValue(":name1", userName);
-    nameBanQuery->bindValue(":name2", userName);
+                     "<=> 0, b.visible_reason from {prefix}_bans b where "
+                     "b.user_id = (select id from {prefix}_users where name = :account_name) "
+                     "or (b.user_id is null and b.user_name = :guest_name) "
+                     "order by b.time_from desc, b.id desc limit 1");
+    nameBanQuery->bindValue(":account_name", userName);
+    nameBanQuery->bindValue(":guest_name", userName);
     if (!execSqlQuery(nameBanQuery)) {
-        qCWarning(DatabaseInterfaceLog) << "Name ban check failed: SQL error" << nameBanQuery->lastError();
+        qCWarning(DatabaseInterfaceLog) << "Name ban check failed: SQL error";
         return false;
     }
 
@@ -656,16 +720,12 @@ bool Servatrice_DatabaseInterface::checkUserIsIpBanned(const QString &ipAddress,
                      " b.minutes <=> 0,"
                      " b.visible_reason"
                      " from {prefix}_bans b"
-                     " where"
-                     " b.time_from = (select max(c.time_from)"
-                     " from {prefix}_bans c"
-                     " where c.ip_address = :address)"
-                     " and b.ip_address = :address2");
+                     " where b.ip_address = :address"
+                     " order by b.time_from desc, b.id desc limit 1");
 
     ipBanQuery->bindValue(":address", ipAddress);
-    ipBanQuery->bindValue(":address2", ipAddress);
     if (!execSqlQuery(ipBanQuery)) {
-        qCWarning(DatabaseInterfaceLog) << "IP ban check failed: SQL error." << ipBanQuery->lastError();
+        qCWarning(DatabaseInterfaceLog) << "IP ban check failed: SQL error.";
         return false;
     }
 
@@ -1815,8 +1875,11 @@ QList<ServerInfo_Ban> Servatrice_DatabaseInterface::getUserBanHistory(const QStr
 
     QSqlQuery *query =
         prepareQuery("SELECT A.id_admin, A.time_from, A.minutes, A.reason, A.visible_reason, B.name AS name_admin FROM "
-                     "{prefix}_bans A LEFT JOIN {prefix}_users B ON A.id_admin=B.id WHERE A.user_name = :user_name");
-    query->bindValue(":user_name", userName);
+                     "{prefix}_bans A LEFT JOIN {prefix}_users B ON A.id_admin=B.id WHERE "
+                     "A.user_id = (SELECT id FROM {prefix}_users WHERE name = :account_name) "
+                     "OR (A.user_id IS NULL AND A.user_name = :guest_name) ORDER BY A.time_from DESC, A.id DESC");
+    query->bindValue(":account_name", userName);
+    query->bindValue(":guest_name", userName);
 
     if (!execSqlQuery(query)) {
         qCWarning(DatabaseInterfaceLog) << "Failed to collect ban history information: SQL Error";
@@ -1948,7 +2011,8 @@ QList<ServerInfo_UserAlt> Servatrice_DatabaseInterface::getUserAlts(const QStrin
     QString queryString = "SELECT u.name, u.email, u.clientid, UNIX_TIMESTAMP(u.registrationDate), "
                           "UNIX_TIMESTAMP(a.last_login), "
                           "(SELECT COUNT(*) FROM {prefix}_warnings w WHERE w.user_id = u.id), "
-                          "(SELECT COUNT(*) FROM {prefix}_bans b WHERE b.user_name = u.name), "
+                          "(SELECT COUNT(*) FROM {prefix}_bans b WHERE b.user_id = u.id "
+                          "OR (b.user_id IS NULL AND b.user_name = u.name)), "
                           "u.active "
                           "FROM {prefix}_users u "
                           "LEFT JOIN {prefix}_user_analytics a ON a.id = u.id "
