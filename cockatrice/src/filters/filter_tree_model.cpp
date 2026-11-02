@@ -30,6 +30,10 @@ FilterTreeModel::~FilterTreeModel()
 
 void FilterTreeModel::proxyBeginInsertRow(const FilterTreeNode *node, int i)
 {
+    if (node == fTree) {
+        beginInsertRows(QModelIndex(), i, i);
+        return;
+    }
     int idx;
 
     idx = node->index();
@@ -50,6 +54,10 @@ void FilterTreeModel::proxyEndInsertRow(const FilterTreeNode *node, int)
 
 void FilterTreeModel::proxyBeginRemoveRow(const FilterTreeNode *node, int i)
 {
+    if (node == fTree) {
+        beginRemoveRows(QModelIndex(), i, i);
+        return;
+    }
     int idx;
 
     idx = node->index();
@@ -322,7 +330,8 @@ QModelIndex FilterTreeModel::parent(const QModelIndex &ind) const
     }
 
     parent = node->parent();
-    if (parent) {
+    // The tree is the invisible root represented by an invalid model index.
+    if (parent && parent != fTree) {
         int row = parent->index();
         if (row < 0) {
             return QModelIndex();
@@ -340,7 +349,7 @@ bool FilterTreeModel::removeRows(int row, int count, const QModelIndex &parent)
     int i, last;
 
     last = row + count - 1;
-    if (!parent.isValid() || count < 1 || row < 0) {
+    if (count < 1 || row < 0) {
         return false;
     }
 
