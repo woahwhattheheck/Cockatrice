@@ -120,6 +120,7 @@ public:
     }
 
 signals:
+    void randomHandRevealFailed(bool unsupported);
     void requestViewTopCardsDialog(int defaultNumberTopCards, int deckSize);
     void requestViewBottomCardsDialog(int defaultNumberBottomCards, int deckSize);
     void requestShuffleTopDialog(int defaultNumberTopCards, int maxCards);
@@ -279,6 +280,7 @@ public slots:
     void actReveal(QList<CardState *> selectedCards, QAction *action);
     void actRevealHand(int revealToPlayerId);
     void actRevealRandomHandCard(int revealToPlayerId);
+    void actRevealRandomHandCards(int revealToPlayerId, int amount);
     void actRevealLibrary(int revealToPlayerId);
 
     void actSortHand();

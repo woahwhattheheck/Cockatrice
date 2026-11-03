@@ -42,8 +42,12 @@ private slots:
     void populateRevealRandomHandCardMenuWithActivePlayers();
     void onRevealHandTriggered();
     void onRevealRandomHandCardTriggered();
+    void populateRevealRandomHandCardsMenuWithActivePlayers();
+    void onRevealRandomHandCardsTriggered();
+    void onRandomHandRevealFailed(bool unsupported);
 
 private:
+    QWidget *dialogParent() const;
     PlayerGraphicsItem *player;
 
     QAction *aViewHand = nullptr;
@@ -61,6 +65,9 @@ private:
 
     QMenu *mRevealRandomHandCard = nullptr;
     QAction *aRevealRandomHandCardToAll = nullptr;
+
+    QMenu *mRevealRandomHandCards = nullptr;
+    QAction *aRevealRandomHandCardsToAll = nullptr;
 
     QMenu *mMoveHandMenu = nullptr;
     QAction *aMoveHandToTopLibrary = nullptr;
