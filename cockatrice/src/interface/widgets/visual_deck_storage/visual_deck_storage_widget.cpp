@@ -2,6 +2,7 @@
 
 #include "../../../client/settings/cache_settings.h"
 #include "../../pixel_map_generator.h"
+#include "../dialogs/dlg_manage_deck_tags.h"
 #include "deck_preview/deck_preview_color_identity_filter_widget.h"
 #include "deck_preview/deck_preview_widget.h"
 #include "libcockatrice/card/database/card_database.h"
@@ -15,11 +16,11 @@
 #include "visual_deck_storage_tag_filter_widget.h"
 
 #include <QAbstractItemModel>
-#include <QChar>
 #include <QDebug>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QList>
+#include <QMessageBox>
 #include <QModelIndex>
 #include <QPushButton>
 #include <QScrollArea>
@@ -72,6 +73,9 @@ VisualDeckStorageWidget::VisualDeckStorageWidget(QWidget *parent) : QWidget(pare
     shareButton->setVisible(false);
     connect(shareButton, &QPushButton::clicked, this, &VisualDeckStorageWidget::shareRequested);
 
+    manageTagsButton = new QToolButton(this);
+    connect(manageTagsButton, &QToolButton::clicked, this, &VisualDeckStorageWidget::manageTags);
+
     quickSettingsWidget = new VisualDeckStorageQuickSettingsWidget(this);
     connect(quickSettingsWidget, &VisualDeckStorageQuickSettingsWidget::showFoldersChanged, this,
             &VisualDeckStorageWidget::updateShowFolders);
@@ -83,6 +87,7 @@ VisualDeckStorageWidget::VisualDeckStorageWidget(QWidget *parent) : QWidget(pare
     searchAndSortLayout->addWidget(searchWidget);
     searchAndSortLayout->addWidget(refreshButton);
     searchAndSortLayout->addWidget(shareButton);
+    searchAndSortLayout->addWidget(manageTagsButton);
     searchAndSortLayout->addWidget(quickSettingsWidget);
 
     // tag filter box
@@ -164,6 +169,27 @@ void VisualDeckStorageWidget::refreshIfPossible()
     }
 }
 
+void VisualDeckStorageWidget::manageTags()
+{
+    // An incomplete scan would make a bulk edit silently miss decks.
+    if (storageModel->getDeckPath().isEmpty() || storageModel->isScanning()) {
+        QMessageBox::information(this, tr("Manage tags"), tr("Wait for the deck folder scan to finish first."));
+        return;
+    }
+    for (int row = 0; row < storageModel->rowCount(); ++row) {
+        const auto &deck = storageModel->dataForRow(row);
+        if (!deck.loadSucceeded) {
+            QMessageBox::warning(this, tr("Manage tags"),
+                                 tr("Some decks are still loading or could not be read. Refresh the deck folder and "
+                                    "resolve any unreadable files before changing tags across decks."));
+            return;
+        }
+    }
+    auto *dialog = new DlgManageDeckTags(storageModel, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->open();
+}
+
 void VisualDeckStorageWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
@@ -190,6 +216,8 @@ void VisualDeckStorageWidget::retranslateUi()
 
     refreshButton->setToolTip(tr("Refresh loaded files"));
     shareButton->setToolTip(tr("Select decks to share"));
+    manageTagsButton->setText(tr("Manage tags"));
+    manageTagsButton->setToolTip(tr("Rename or remove tags across your decks"));
     quickSettingsWidget->setToolTip(tr("Visual Deck Storage Settings"));
 
     sortWidget->retranslateUi();

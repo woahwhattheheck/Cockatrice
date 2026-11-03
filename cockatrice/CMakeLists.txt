@@ -46,6 +46,7 @@ set(cockatrice_SOURCES
     src/interface/widgets/dialogs/dlg_load_remote_deck.cpp
     src/interface/widgets/dialogs/dlg_local_game_options.cpp
     src/interface/widgets/dialogs/dlg_login_prompt.cpp
+    src/interface/widgets/dialogs/dlg_manage_deck_tags.cpp
     src/interface/widgets/dialogs/dlg_manage_sets.cpp
     src/interface/widgets/dialogs/dlg_my_reports.cpp
     src/interface/widgets/dialogs/dlg_register.cpp

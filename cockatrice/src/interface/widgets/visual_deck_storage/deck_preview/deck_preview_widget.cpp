@@ -247,7 +247,7 @@ QString DeckPreviewWidget::getDisplayName() const
 }
 
 /**
- * @brief Reloads the deck if the file's last modified time has increased since we last checked.
+ * @brief Reloads the deck if the file's last modified time has changed since we last checked.
  */
 void DeckPreviewWidget::reloadIfModified()
 {
@@ -451,9 +451,18 @@ void DeckPreviewWidget::imageDoubleClickedEvent(QMouseEvent *event, DeckPreviewC
 void DeckPreviewWidget::setTags(const QStringList &tags)
 {
     const int r = row();
-    if (r != -1) {
-        model->setTags(r, tags);
+    if (r == -1 || model->setTags(r, tags)) {
+        return;
     }
+
+    // The tag editor has already updated its chips. Restore persisted tags,
+    // reloading a changed file first, rather than displaying an unsaved edit.
+    model->reloadIfModified(r);
+    syncFromModel();
+    QMessageBox::warning(
+        this, tr("Tags not saved"),
+        tr("The deck's tags could not be saved. The file may have changed elsewhere or could not "
+           "be written. The preview has been restored; refresh the folder if the file cannot be read."));
 }
 
 QMenu *DeckPreviewWidget::createRightClickMenu()

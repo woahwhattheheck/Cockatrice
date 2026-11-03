@@ -68,7 +68,7 @@ public slots:
     void syncFromModel();
 
     /**
-     * @brief Reloads the deck file if its modification time is newer than the stored one.
+     * @brief Reloads the deck file if its modification time differs from the stored one.
      */
     void reloadIfModified();
     void refreshBannerCardToolTip();
