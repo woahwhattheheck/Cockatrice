@@ -274,8 +274,9 @@ private:
     void startRemoteSave(RemoteSave request);
     void finishRemoteSave(quint64 requestId, bool succeeded);
     bool matchesCurrentDeck(const RemoteSave &request) const;
+    bool matchesCurrentDeck(quint64 revision, const LoadedDeck::LoadInfo &destination) const;
     void cancelPendingLeave();
-    bool confirmCloseWithContinuation(std::function<void()> afterSave, bool closingApplication = false);
+    bool confirmCloseWithContinuation(std::function<void()> afterSave);
 
     /** @brief Helper for editing decks from the clipboard. */
     void editDeckInClipboard(bool annotated);
