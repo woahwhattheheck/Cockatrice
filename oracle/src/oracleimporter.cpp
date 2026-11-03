@@ -5,6 +5,7 @@
 #include "libcockatrice/card/lazy_properties_hash.h"
 #include "libcockatrice/card/relation/card_relation_type.h"
 #include "libcockatrice/interfaces/noop_card_set_priority_controller.h"
+#include "oracle_source_data.h"
 #include "parsehelpers.h"
 
 #include <QChar>
@@ -100,16 +101,28 @@ static CardSet::Priority getSetPriority(const QString &setType, const QString &s
 
 bool OracleImporter::readSetsFromByteArray(QByteArray data)
 {
+    return readSets(std::move(data), {});
+}
+
+bool OracleImporter::readSetsFromSource(QSharedPointer<OracleSourceData> source, QString &error)
+{
+    if (!source || !source->map(error)) {
+        importSuccessful = false;
+        importError = error;
+        releaseSetData();
+        return false;
+    }
+    return readSets(source->bytes(), source);
+}
+
+bool OracleImporter::readSets(QByteArray data, QSharedPointer<OracleSourceData> source)
+{
     importSuccessful = false;
     importError.clear();
-    allSets.clear();
-    rawSetsData.clear();
+    releaseSetData();
     const RawJson::ScanProgressCallback progress =
         progressReporting
-            ? [this](
-                  qsizetype bytesRead,
-                  qsizetype
-                      totalBytes) { emit dataReadProgress(static_cast<int>(bytesRead), static_cast<int>(totalBytes)); }
+            ? [this](qsizetype bytesRead, qsizetype totalBytes) { emit dataReadProgress(bytesRead, totalBytes); }
             : RawJson::ScanProgressCallback{};
 
     RawJson::ScanError error;
@@ -158,6 +171,7 @@ bool OracleImporter::readSetsFromByteArray(QByteArray data)
     }
     allSets = newSetList;
     rawSetsData = std::move(data);
+    rawSetsSource = std::move(source);
     return true;
 }
 
@@ -813,7 +827,9 @@ int OracleImporter::startImport()
             return failImport(tr("The source data for set %1 is unavailable. Load the sets file again.")
                                   .arg(curSetToParse.getShortName()));
         }
-        const QByteArray setBytes = rawSetsData.sliced(rawRange.start, rawRange.length);
+        // The source owner outlives parsing. A non-owning view avoids copying a
+        // large set out of the mapped file before QJsonDocument parses it.
+        const QByteArray setBytes = QByteArray::fromRawData(rawSetsData.constData() + rawRange.start, rawRange.length);
         QJsonParseError parseError;
         const QJsonDocument setDoc = QJsonDocument::fromJson(setBytes, &parseError);
         if (parseError.error != QJsonParseError::NoError) {
@@ -879,6 +895,7 @@ void OracleImporter::releaseSetData()
 {
     allSets.clear();
     rawSetsData.clear();
+    rawSetsSource.clear();
 }
 
 void OracleImporter::clear()
@@ -888,6 +905,7 @@ void OracleImporter::clear()
     cards.clear();
     allSets.clear();
     rawSetsData.clear();
+    rawSetsSource.clear();
     localizedEntries.clear();
     splitLocalizedTexts.clear();
 }

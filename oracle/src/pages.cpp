@@ -3,6 +3,7 @@
 #include "client/settings/cache_settings.h"
 #include "database_writer.h"
 #include "main.h"
+#include "oracle_source_data.h"
 #include "oracleimporter.h"
 #include "oraclewizard.h"
 #include "pagetemplates.h"
@@ -104,39 +105,67 @@ namespace
  * XML for the plain-XML path. Must never touch the wizard or the page: the caller
  * consumes the returned LoadSetsResult on the UI thread in importFinished().
  */
-LoadSetsResult loadSetsData(const QPointer<OracleImporter> &importer, QByteArray data)
+LoadSetsResult loadSetsData(const QPointer<OracleImporter> &importer, QSharedPointer<OracleSourceData> source)
 {
     LoadSetsResult result;
-
     while (true) {
-        if (data.startsWith(XZ_SIGNATURE)) {
+        if (!source->rewind(result.errorMessage)) {
+            return result;
+        }
+        const QByteArray header = source->device().peek(6);
+        const bool xzCompressed = header.startsWith(XZ_SIGNATURE);
+        const bool zipCompressed = header.startsWith(ZIP_SIGNATURE);
+        if (!xzCompressed && !zipCompressed) {
+            // JSON and XML may start with whitespace or a UTF-8 byte-order mark.
+            if (header.startsWith("\xEF\xBB\xBF")) {
+                source->device().seek(3);
+            }
+            char first = 0;
+            while (source->device().getChar(&first) &&
+                   (first == ' ' || first == '\t' || first == '\r' || first == '\n')) {
+            }
+            if (first == '<') {
+                if (!source->map(result.errorMessage)) {
+                    return result;
+                }
+                result.errorMessage = OracleDatabase::validateXml(source->bytes());
+                if (!result.errorMessage.isEmpty()) {
+                    return result;
+                }
+                result.ok = true;
+                result.plainXml = true;
+                result.xmlSource = source;
+            } else if (first == '{') {
+                result.ok = importer && importer->readSetsFromSource(source, result.errorMessage);
+            } else {
+                result.errorMessage = LoadSetsPage::tr("Failed to interpret downloaded data.");
+            }
+            return result;
+        }
+
+        auto expanded = QSharedPointer<OracleSourceData>::create();
+        if (!expanded->open(result.errorMessage)) {
+            return result;
+        }
+        if (xzCompressed) {
 #ifdef HAS_LZMA
-            QBuffer inBuffer(&data);
-            QByteArray decompressed;
-            QBuffer outBuffer(&decompressed);
-            inBuffer.open(QBuffer::ReadOnly);
-            outBuffer.open(QBuffer::WriteOnly);
             XzDecompressor xz;
-            if (!xz.decompress(&inBuffer, &outBuffer)) {
-                result.errorMessage = LoadSetsPage::tr("Xz extraction failed.");
-                result.offerUncompressedFallback = true;
+            if (!xz.decompress(&source->device(), &expanded->device())) {
+                result.errorMessage = LoadSetsPage::tr("Xz extraction failed. Check the available temporary disk space "
+                                                       "and the input file.");
+                result.offerUncompressedFallback = expanded->device().error() == QFileDevice::NoError;
                 return result;
             }
-            data = decompressed;
-            continue;
 #else
             result.errorMessage =
                 LoadSetsPage::tr("Sorry, this version of Oracle does not support xz compressed files.");
             result.offerUncompressedFallback = true;
             return result;
 #endif
-        }
-
-        if (data.startsWith(ZIP_SIGNATURE)) {
+        } else {
 #ifdef HAS_ZLIB
-            QBuffer inBuffer(&data);
             UnZip uz;
-            const UnZip::ErrorCode openEc = uz.openArchive(&inBuffer);
+            const UnZip::ErrorCode openEc = uz.openArchive(&source->device());
             if (openEc != UnZip::Ok) {
                 result.errorMessage = LoadSetsPage::tr("Failed to open Zip archive: %1.").arg(uz.formatError(openEc));
                 result.offerUncompressedFallback = true;
@@ -148,46 +177,21 @@ LoadSetsResult loadSetsData(const QPointer<OracleImporter> &importer, QByteArray
                 result.offerUncompressedFallback = true;
                 return result;
             }
-            const QString fileName = uz.fileList().at(0);
-            QByteArray decompressed;
-            QBuffer outBuffer(&decompressed);
-            outBuffer.open(QBuffer::ReadWrite);
-            const UnZip::ErrorCode ec = uz.extractFile(fileName, &outBuffer);
+            const UnZip::ErrorCode ec = uz.extractFile(uz.fileList().at(0), &expanded->device());
             uz.closeArchive();
             if (ec != UnZip::Ok) {
                 result.errorMessage = LoadSetsPage::tr("Zip extraction failed: %1.").arg(uz.formatError(ec));
-                result.offerUncompressedFallback = true;
+                result.offerUncompressedFallback = expanded->device().error() == QFileDevice::NoError;
                 return result;
             }
-            data = decompressed;
-            continue;
 #else
             result.errorMessage = LoadSetsPage::tr("Sorry, this version of Oracle does not support zipped files.");
             result.offerUncompressedFallback = true;
             return result;
 #endif
         }
-        break;
+        source = std::move(expanded);
     }
-
-    if (data.trimmed().startsWith("<")) {
-        result.errorMessage = OracleDatabase::validateXml(data);
-        if (!result.errorMessage.isEmpty()) {
-            return result;
-        }
-        result.ok = true;
-        result.plainXml = true;
-        result.xmlData = std::move(data);
-        return result;
-    }
-
-    if (data.startsWith("{")) {
-        result.ok = importer && importer->readSetsFromByteArray(std::move(data));
-        return result;
-    }
-
-    result.errorMessage = LoadSetsPage::tr("Failed to interpret downloaded data.");
-    return result;
 }
 
 } // namespace
@@ -462,9 +466,27 @@ void LoadSetsPage::downloadSetsFile(const QUrl &url)
 
     QNetworkRequest request = QNetworkRequest(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, QString("Cockatrice %1").arg(VERSION_STRING));
+    auto source = QSharedPointer<OracleSourceData>::create();
+    auto writeError = QSharedPointer<QString>::create();
+    if (!source->open(*writeError)) {
+        QMessageBox::critical(this, tr("Error"), *writeError);
+        wizard()->enableButtons();
+        setEnabled(true);
+        return;
+    }
     auto *reply = wizard()->nam->get(request);
-
-    connect(reply, &QNetworkReply::finished, this, &LoadSetsPage::actDownloadFinishedSetsFile);
+    reply->setReadBufferSize(256 * 1024);
+    connect(reply, &QIODevice::readyRead, this, [reply, source, writeError] {
+        if (writeError->isEmpty() && !source->append(*reply, *writeError)) {
+            reply->abort();
+        }
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, source, writeError] {
+        if (writeError->isEmpty() && reply->error() == QNetworkReply::NoError) {
+            source->append(*reply, *writeError);
+        }
+        actDownloadFinishedSetsFile(reply, source, *writeError);
+    });
     connect(reply, &QNetworkReply::downloadProgress, this, &LoadSetsPage::actDownloadProgressSetsFile);
 }
 
@@ -472,23 +494,24 @@ void LoadSetsPage::actDownloadProgressSetsFile(qint64 received, qint64 total)
 {
     emitProgress("download", received, total);
     if (total > 0) {
-        progressBar->setMaximum(static_cast<int>(total));
-        progressBar->setValue(static_cast<int>(received));
+        progressBar->setRange(0, 1000);
+        progressBar->setValue(static_cast<int>(1000.0 * received / total));
     }
-    progressLabel->setText(tr("Downloading (%1 MB)").arg((int)received / (1024 * 1024)));
+    progressLabel->setText(tr("Downloading (%1 MB)").arg(received / (1024 * 1024)));
 }
 
-void LoadSetsPage::actDownloadFinishedSetsFile()
+void LoadSetsPage::actDownloadFinishedSetsFile(QNetworkReply *reply,
+                                               QSharedPointer<OracleSourceData> source,
+                                               const QString &writeError)
 {
-    // check for a reply
-    auto *reply = dynamic_cast<QNetworkReply *>(sender());
     if (wizard()->wasCancelled()) {
         reply->deleteLater();
         return;
     }
     auto errorCode = reply->error();
-    if (errorCode != QNetworkReply::NoError) {
-        QMessageBox::critical(this, tr("Error"), tr("Network error: %1.").arg(reply->errorString()));
+    if (!writeError.isEmpty() || errorCode != QNetworkReply::NoError) {
+        QMessageBox::critical(this, tr("Error"),
+                              writeError.isEmpty() ? tr("Network error: %1.").arg(reply->errorString()) : writeError);
 
         wizard()->enableButtons();
         setEnabled(true);
@@ -516,22 +539,22 @@ void LoadSetsPage::actDownloadFinishedSetsFile()
         wizard()->settings->remove("allsetsurl");
     }
 
-    readSetsFromByteArray(reply->readAll());
+    readSetsFromSource(std::move(source));
     reply->deleteLater();
 }
 
-void LoadSetsPage::updateParsingProgress(int bytesRead, int totalBytes)
+void LoadSetsPage::updateParsingProgress(qint64 bytesRead, qint64 totalBytes)
 {
     if (totalBytes <= 0) {
         return;
     }
-    progressBar->setRange(0, totalBytes);
-    progressBar->setValue(bytesRead);
+    progressBar->setRange(0, 1000);
+    progressBar->setValue(static_cast<int>(1000.0 * bytesRead / totalBytes));
     const int percent = static_cast<int>((100.0 * bytesRead) / totalBytes);
     progressLabel->setText(tr("Parsing file (%1%)").arg(percent));
 }
 
-void LoadSetsPage::scanProgressToStdout(int bytesRead, int totalBytes)
+void LoadSetsPage::scanProgressToStdout(qint64 bytesRead, qint64 totalBytes)
 {
     emitProgress("scan", bytesRead, totalBytes);
 }
@@ -553,7 +576,7 @@ void LoadSetsPage::beginLoadSets(bool compressedFile)
     emit completeChanged();
 
     wizard()->downloadedPlainXml = false;
-    wizard()->xmlData.clear();
+    wizard()->xmlSource.clear();
 
     if (wizard()->backgroundMode) {
         connect(wizard()->importer, &OracleImporter::dataReadProgress, this, &LoadSetsPage::scanProgressToStdout,
@@ -564,15 +587,15 @@ void LoadSetsPage::beginLoadSets(bool compressedFile)
     }
 }
 
-void LoadSetsPage::readSetsFromByteArray(QByteArray _data)
+void LoadSetsPage::readSetsFromSource(QSharedPointer<OracleSourceData> source)
 {
-    const bool compressed = _data.startsWith(XZ_SIGNATURE) || _data.startsWith(ZIP_SIGNATURE);
-    beginLoadSets(compressed);
+    QString error;
+    const QByteArray header = source->rewind(error) ? source->device().peek(6) : QByteArray();
+    beginLoadSets(header.startsWith(XZ_SIGNATURE) || header.startsWith(ZIP_SIGNATURE));
 
     // Decompress and scan off the UI thread so a large download can't freeze the window.
     const QPointer<OracleImporter> importer = wizard()->importer;
-    future = QtConcurrent::run(
-        [importer, data = std::move(_data)]() mutable { return loadSetsData(importer, std::move(data)); });
+    future = QtConcurrent::run([importer, source = std::move(source)] { return loadSetsData(importer, source); });
     watcher.setFuture(future);
 }
 
@@ -592,13 +615,12 @@ void LoadSetsPage::readSetsFromFile(const QString &fileName)
     // of MB, so even the read itself must not block the window).
     const QPointer<OracleImporter> importer = wizard()->importer;
     future = QtConcurrent::run([importer, fileName]() mutable -> LoadSetsResult {
-        QFile file(fileName);
-        if (!file.open(QIODevice::ReadOnly)) {
-            LoadSetsResult readError;
-            readError.errorMessage = LoadSetsPage::tr("Cannot open file '%1'.").arg(fileName);
-            return readError;
+        auto source = QSharedPointer<OracleSourceData>::create();
+        LoadSetsResult result;
+        if (!source->openLocalFile(fileName, result.errorMessage)) {
+            return result;
         }
-        return loadSetsData(importer, file.readAll());
+        return loadSetsData(importer, std::move(source));
     });
     watcher.setFuture(future);
 }
@@ -645,7 +667,7 @@ void LoadSetsPage::importFinished()
 
     if (result.plainXml) {
         wizard()->downloadedPlainXml = true;
-        wizard()->xmlData = result.xmlData;
+        wizard()->xmlSource = result.xmlSource;
     }
 
     if (wizard()->backgroundMode) {
@@ -833,7 +855,7 @@ void SaveSetsPage::retranslateUi()
     setTitle(tr("Sets imported"));
     if (wizard()->downloadedPlainXml) {
         setSubTitle(tr("A Cockatrice card database file of %1 MB has been downloaded.")
-                        .arg(qRound(wizard()->xmlData.size() / 1000000.0)));
+                        .arg(qRound(wizard()->xmlSource->size() / 1000000.0)));
     } else {
         setSubTitle(tr("The following sets have been found:"));
     }
@@ -910,10 +932,9 @@ bool SaveSetsPage::validatePage()
 
     if (wizard()->downloadedPlainXml) {
         QString error;
-        if (!OracleDatabase::saveXml(fileName, wizard()->xmlData, &error)) {
+        if (!OracleDatabase::saveXml(fileName, wizard()->xmlSource->bytes(), &error)) {
             return failSave(tr("The file could not be saved to %1: %2").arg(fileName, error));
         }
-        wizard()->xmlData.clear();
     } else if (!wizard()->importer->saveToFile(fileName, wizard()->getCardSourceUrl(),
                                                wizard()->getCardSourceVersion())) {
         return failSave(tr("The file could not be saved to %1").arg(fileName));

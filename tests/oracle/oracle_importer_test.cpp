@@ -1,9 +1,11 @@
 #include "../../oracle/src/database_writer.h"
+#include "../../oracle/src/oracle_source_data.h"
 #include "../../oracle/src/oracleimporter.h"
 #include "../../oracle/src/raw_json_scanner.h"
 #include "libcockatrice/card/card_info.h"
 
 #include "gtest/gtest.h"
+#include <QBuffer>
 #include <QByteArray>
 #include <QChar>
 #include <QDate>
@@ -1159,6 +1161,80 @@ QByteArray refreshSource(const QString &name = "New Card")
     return QJsonDocument(QJsonObject{{"data", QJsonObject{{"TST", set}}}}).toJson(QJsonDocument::Compact);
 }
 } // namespace
+
+TEST_F(OracleImporterTest, TemporarySourceImportsBomAndWhitespaceAndRetainsItsOwner)
+{
+    auto source = QSharedPointer<OracleSourceData>::create();
+    QString error;
+    ASSERT_TRUE(source->open(error)) << error.toStdString();
+    QByteArray bytes = QByteArray("\xEF\xBB\xBF \n\t") + refreshSource();
+    QBuffer input(&bytes);
+    ASSERT_TRUE(input.open(QIODevice::ReadOnly));
+    ASSERT_TRUE(source->append(input, error)) << error.toStdString();
+    ASSERT_TRUE(importer->readSetsFromSource(source, error)) << error.toStdString();
+    source.clear();
+    ASSERT_EQ(importer->startImport(), 1);
+    EXPECT_TRUE(importer->hasSuccessfulImport());
+    EXPECT_TRUE(importer->getCardList().contains("New Card"));
+}
+
+TEST_F(OracleImporterTest, LocalSourceUsesTheOriginalReadOnlyFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = dir.filePath("cards.json");
+    const QByteArray bytes = refreshSource();
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(file.write(bytes), bytes.size());
+    file.close();
+
+    auto source = QSharedPointer<OracleSourceData>::create();
+    QString error;
+    ASSERT_TRUE(source->openLocalFile(path, error)) << error.toStdString();
+    EXPECT_EQ(source->device().fileName(), path);
+    EXPECT_EQ(source->device().openMode(), QIODevice::ReadOnly);
+    ASSERT_TRUE(importer->readSetsFromSource(source, error)) << error.toStdString();
+    ASSERT_EQ(importer->startImport(), 1);
+    importer->releaseSetData();
+    source.clear();
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    EXPECT_EQ(file.readAll(), bytes);
+}
+
+TEST_F(OracleImporterTest, MappedSourceRejectsStaleAndOutOfRangeSetSlices)
+{
+    auto source = QSharedPointer<OracleSourceData>::create();
+    QString error;
+    const QByteArray bytes = refreshSource();
+    ASSERT_TRUE(source->open(error)) << error.toStdString();
+    ASSERT_EQ(source->device().write(bytes), bytes.size());
+    ASSERT_TRUE(importer->readSetsFromSource(source, error)) << error.toStdString();
+    const auto selected = importer->getSets();
+    importer->releaseSetData();
+    importer->getSets() = selected;
+    EXPECT_EQ(importer->startImport(), 0);
+    EXPECT_FALSE(importer->hasSuccessfulImport());
+
+    ASSERT_TRUE(importer->readSetsFromSource(source, error)) << error.toStdString();
+    importer->getSets().first().setRawRange({bytes.size() - 1, 2});
+    EXPECT_EQ(importer->startImport(), 0);
+    EXPECT_FALSE(importer->hasSuccessfulImport());
+    EXPECT_TRUE(importer->getImportError().contains("TST"));
+}
+
+TEST_F(OracleImporterTest, FailedSourceMappingCannotReusePreviousSuccessfulImport)
+{
+    ASSERT_TRUE(importer->readSetsFromByteArray(refreshSource()));
+    ASSERT_EQ(importer->startImport(), 1);
+    auto emptySource = QSharedPointer<OracleSourceData>::create();
+    QString error;
+    ASSERT_TRUE(emptySource->open(error)) << error.toStdString();
+    EXPECT_FALSE(importer->readSetsFromSource(emptySource, error));
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_FALSE(importer->hasSuccessfulImport());
+    EXPECT_EQ(importer->startImport(), 0);
+}
 
 TEST_F(OracleImporterTest, FailedLazyParseKeepsInstalledDatabase)
 {

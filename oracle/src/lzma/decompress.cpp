@@ -21,7 +21,7 @@ XzDecompressor::XzDecompressor(QObject *parent)
 
 }
 
-bool XzDecompressor::decompress(QBuffer *in, QBuffer *out)
+bool XzDecompressor::decompress(QIODevice *in, QIODevice *out)
 {
 	lzma_stream strm = LZMA_STREAM_INIT;
 	bool success;
@@ -115,7 +115,7 @@ bool XzDecompressor::init_decoder(lzma_stream *strm)
 }
 
 
-bool XzDecompressor::internal_decompress(lzma_stream *strm, QBuffer *in, QBuffer *out)
+bool XzDecompressor::internal_decompress(lzma_stream *strm, QIODevice *in, QIODevice *out)
 {
 	// When LZMA_CONCATENATED flag was used when initializing the decoder,
 	// we need to tell lzma_code() when there will be no more input.
@@ -131,7 +131,6 @@ bool XzDecompressor::internal_decompress(lzma_stream *strm, QBuffer *in, QBuffer
 
 	uint8_t inbuf[BUFSIZ];
 	uint8_t outbuf[BUFSIZ];
-	qint64 bytesAvailable;
 
 	strm->next_in = NULL;
 	strm->avail_in = 0;
@@ -140,20 +139,14 @@ bool XzDecompressor::internal_decompress(lzma_stream *strm, QBuffer *in, QBuffer
 	while (true) {
 		if (strm->avail_in == 0) {
 			strm->next_in = inbuf;
-			bytesAvailable = in->bytesAvailable();
-			if(bytesAvailable == 0) {
-				// Once the end of the input file has been reached,
-				// we need to tell lzma_code() that no more input
-				// will be coming. As said before, this isn't required
-				// if the LZMA_CONCATENATED flag isn't used when
-				// initializing the decoder.
+			const qint64 bytesRead = in->read(reinterpret_cast<char *>(inbuf), sizeof(inbuf));
+			if (bytesRead < 0) {
+				qWarning() << "Read error:" << in->errorString();
+				return false;
+			}
+			strm->avail_in = static_cast<size_t>(bytesRead);
+			if (bytesRead == 0) {
 				action = LZMA_FINISH;
-			} else if(bytesAvailable >= BUFSIZ) {
-				in->read((char*) inbuf, BUFSIZ);
-				strm->avail_in = BUFSIZ;
-			} else {
-				in->read((char*) inbuf, bytesAvailable);
-				strm->avail_in = bytesAvailable;
 			}
 		}
 
