@@ -94,7 +94,7 @@ public:
         return decks.size();
     }
 
-    /** @brief True while a refresh request is in flight and the grid has no data yet. */
+    /** @brief True while the current public-deck refresh request is in flight. */
     [[nodiscard]] bool isLoading() const
     {
         return loading;
@@ -116,7 +116,7 @@ private slots:
 private:
     static QList<DeckEntry> entriesFromFolder(const ServerInfo_DeckStorage_Folder &folder);
     [[nodiscard]] QList<int> filteredIndices(const QList<DeckEntry> &entries) const;
-    void replaceDecks(QList<DeckEntry> entries, quint64 sequence, bool completeRequest = false);
+    void replaceDecks(QList<DeckEntry> entries);
     void finishRequest(quint64 sequence, const QString &error = {});
     void rebuildVisibleIndices();
     void setLoading(bool value);

@@ -36,10 +36,10 @@ RemotePublicDecksModel::RemotePublicDecksModel(AbstractClient *_client, QObject 
             // Retire the active request without discarding the last accepted
             // snapshot. A disconnect is a transport failure, not a user clear.
             const bool wasLoading = loading;
-            const quint64 sequence = ++requestSequence;
+            ++requestSequence;
             loadingTimeoutTimer->stop();
             setLoading(false);
-            if (sequence == requestSequence && wasLoading) {
+            if (wasLoading) {
                 emit loadFailed(tr("The connection was lost while loading public decks. Reconnect and try again."));
             }
         }
@@ -156,49 +156,33 @@ void RemotePublicDecksModel::rebuildVisibleIndices()
     endResetModel();
 }
 
-void RemotePublicDecksModel::replaceDecks(QList<DeckEntry> entries, quint64 sequence, bool completeRequest)
+void RemotePublicDecksModel::replaceDecks(QList<DeckEntry> entries)
 {
-    if (sequence != requestSequence) {
-        return;
-    }
     // Views must still be able to read the old rows in modelAboutToBeReset.
     beginResetModel();
     decks = std::move(entries);
     visibleIndices = filteredIndices(decks);
     endResetModel();
-    if (completeRequest) {
-        finishRequest(sequence);
-    }
 }
 
 void RemotePublicDecksModel::refresh(const QString &userName)
 {
     if (!client || client->getStatus() == StatusDisconnected || client->getStatus() == StatusDisconnecting) {
-        const quint64 sequence = ++requestSequence;
+        ++requestSequence;
         loadingTimeoutTimer->stop();
         setLoading(false);
-        if (sequence == requestSequence) {
-            emit loadFailed(tr("The server connection is unavailable. Reconnect and try again."));
-        }
+        emit loadFailed(tr("The server connection is unavailable. Reconnect and try again."));
         return;
     }
-    const QString requestedUser = userName;
     const quint64 sequence = ++requestSequence;
-    // The active request owns its timeout and response.
     loadingTimeoutTimer->start();
     setLoading(true);
-    if (sequence != requestSequence || !client) {
-        return;
-    }
     Command_DeckListOtherUser cmd;
-    cmd.set_user_name(requestedUser.toStdString());
+    cmd.set_user_name(userName.toStdString());
     PendingCommand *pend = client->prepareSessionCommand(cmd);
-    connect(pend, &PendingCommand::finished, this,
-            [this, sequence](const Response &response, const CommandContainer &) {
-                if (sequence == requestSequence && loading) {
-                    decksReceived(response, sequence);
-                }
-            });
+    connect(
+        pend, &PendingCommand::finished, this,
+        [this, sequence](const Response &response, const CommandContainer &) { decksReceived(response, sequence); });
     client->sendCommand(pend);
 }
 
@@ -207,12 +191,11 @@ void RemotePublicDecksModel::finishRequest(quint64 sequence, const QString &erro
     if (sequence != requestSequence) {
         return;
     }
-    const QString failure = error;
-    const quint64 completion = ++requestSequence;
+    ++requestSequence;
     loadingTimeoutTimer->stop();
     setLoading(false);
-    if (completion == requestSequence && !failure.isEmpty()) {
-        emit loadFailed(failure);
+    if (!error.isEmpty()) {
+        emit loadFailed(error);
     }
 }
 
@@ -225,12 +208,10 @@ void RemotePublicDecksModel::onLoadingTimeout()
 
 void RemotePublicDecksModel::clear()
 {
-    const quint64 sequence = ++requestSequence;
+    ++requestSequence;
     loadingTimeoutTimer->stop();
-    replaceDecks({}, sequence);
-    if (sequence == requestSequence) {
-        setLoading(false);
-    }
+    replaceDecks({});
+    setLoading(false);
 }
 
 void RemotePublicDecksModel::setLoading(bool value)
@@ -244,7 +225,11 @@ void RemotePublicDecksModel::setLoading(bool value)
 
 void RemotePublicDecksModel::decksReceived(const Response &response, quint64 sequence)
 {
-    // The current reply has arrived; only validation and publication remain.
+    // Ignore replies retired by a retry, timeout, clear or disconnect before
+    // touching the timer owned by the current request.
+    if (sequence != requestSequence || !loading) {
+        return;
+    }
     loadingTimeoutTimer->stop();
     if (response.response_code() != Response::RespOk) {
         finishRequest(sequence, tr("Failed to load the user's public decks (server response code %1).")
@@ -257,7 +242,8 @@ void RemotePublicDecksModel::decksReceived(const Response &response, quint64 seq
     }
 
     const Response_DeckList &resp = response.GetExtension(Response_DeckList::ext);
-    replaceDecks(entriesFromFolder(resp.root()), sequence, true);
+    replaceDecks(entriesFromFolder(resp.root()));
+    finishRequest(sequence);
 }
 
 QList<RemotePublicDecksModel::DeckEntry>
