@@ -227,7 +227,7 @@ void AbstractTabDeckEditor::cleanDeckAndResetModified()
  * @return DeckOpenLocation enum indicating where to open the deck.
  */
 AbstractTabDeckEditor::DeckOpenLocation AbstractTabDeckEditor::confirmOpen(const bool openInSameTabIfBlank,
-                                                                         std::function<void()> afterSave)
+                                                                           std::function<void()> afterSave)
 {
     cancelPendingLeave();
     if (SettingsCache::instance().deckEditor().getOpenDeckInNewTab()) {
@@ -355,20 +355,17 @@ bool AbstractTabDeckEditor::actSaveDeck()
 
 bool AbstractTabDeckEditor::saveDeck(std::function<void()> afterSave)
 {
-    QPointer<AbstractTabDeckEditor> guard(this);
-    const quint64 revision = deckRevision;
-    const quint64 intent = leaveIntent;
     const auto loadedDeck = deckStateManager->toLoadedDeck();
     if (loadedDeck.lastLoadInfo.remoteDeckId != LoadedDeck::LoadInfo::NON_REMOTE_ID) {
-        const auto savePoint = deckStateManager->createSavePoint();
-        const QString &deckString = savePoint.contents;
+        QString deckString = loadedDeck.deckList.writeToString_Native();
         if (deckString.length() > MAX_FILE_LENGTH) {
             QMessageBox::critical(this, tr("Error"), tr("Could not save remote deck"));
             return false;
         }
 
-        RemoteSave request{savePoint, deckRevision, loadedDeck.lastLoadInfo, deckString,
-                           getDeckColorIdentity(loadedDeck.deckList, CardDatabaseManager::query()), std::move(afterSave)};
+        RemoteSave request{deckRevision, loadedDeck.lastLoadInfo, deckString,
+                           getDeckColorIdentity(loadedDeck.deckList, CardDatabaseManager::query()),
+                           std::move(afterSave)};
         if (activeRemoteSave) {
             // Coalesce identical saves and serialize newer snapshots. Only the newest
             // explicitly requested snapshot needs another upload.
@@ -384,12 +381,7 @@ bool AbstractTabDeckEditor::saveDeck(std::function<void()> afterSave)
                 queuedRemoteSave = std::move(request);
             }
         } else {
-            // A failed upload retains the latest explicit save. A plain Save retries
-            // its leave intent only while the revision and destination still match;
-            // a new intent or a changed deck supersedes the retained request.
-            if (queuedRemoteSave && matchesCurrentDeck(*queuedRemoteSave) && !request.afterSave) {
-                request.afterSave = std::move(queuedRemoteSave->afterSave);
-            }
+            // An explicit Save uses the current snapshot and only its own leave intent.
             queuedRemoteSave.reset();
             startRemoteSave(std::move(request));
         }
@@ -401,17 +393,9 @@ bool AbstractTabDeckEditor::saveDeck(std::function<void()> afterSave)
         return actSaveDeckAs();
     }
 
-    const bool saved = DeckLoader::saveToFile(loadedDeck);
-    if (!guard) {
-        return false;
-    }
-    if (saved) {
-        if (intent != leaveIntent || !matchesCurrentDeck(revision, loadedDeck.lastLoadInfo)) {
-            return false;
-        }
+    if (DeckLoader::saveToFile(loadedDeck)) {
         deckStateManager->setModified(false);
-        return guard && intent == leaveIntent && matchesCurrentDeck(revision, loadedDeck.lastLoadInfo) &&
-               !deckStateManager->isModified();
+        return true;
     }
 
     QMessageBox::critical(
@@ -449,10 +433,12 @@ bool AbstractTabDeckEditor::actSaveDeckAs()
     }
     const QString fileName = selectedFiles.first();
     if (intent != leaveIntent || !matchesCurrentDeck(revision, loadedDeck.lastLoadInfo)) {
-        auto *message = new QMessageBox(QMessageBox::Warning, tr("Deck changed"),
-                                       tr("The deck changed while choosing a save location. Nothing was written to %1. "
-                                          "Save the current deck again.").arg(fileName),
-                                       QMessageBox::Ok, this);
+        auto *message =
+            new QMessageBox(QMessageBox::Warning, tr("Deck changed"),
+                            tr("The deck changed while choosing a save location. Nothing was written to %1. "
+                               "Save the current deck again.")
+                                .arg(fileName),
+                            QMessageBox::Ok, this);
         message->setAttribute(Qt::WA_DeleteOnClose);
         message->open();
         return false;
@@ -460,9 +446,6 @@ bool AbstractTabDeckEditor::actSaveDeckAs()
 
     DeckFileFormat::Format fmt = DeckFileFormat::getFormatFromName(fileName);
     std::optional<LoadedDeck::LoadInfo> infoOpt = DeckLoader::saveToFile(loadedDeck.deckList, fileName, fmt);
-    if (!guard) {
-        return false;
-    }
     if (!infoOpt) {
         QMessageBox::critical(
             this, tr("Error"),
@@ -470,14 +453,10 @@ bool AbstractTabDeckEditor::actSaveDeckAs()
         return false;
     }
 
-    if (!guard || intent != leaveIntent || !matchesCurrentDeck(revision, loadedDeck.lastLoadInfo)) {
-        return false;
-    }
     deckStateManager->setLastLoadInfo(infoOpt.value());
     deckStateManager->setModified(false);
     SettingsCache::instance().recents().updateRecentlyOpenedDeckPaths(fileName);
-    return guard && intent == leaveIntent && matchesCurrentDeck(revision, infoOpt.value()) &&
-           !deckStateManager->isModified();
+    return true;
 }
 
 /**
@@ -557,15 +536,16 @@ void AbstractTabDeckEditor::finishRemoteSave(quint64 requestId, bool succeeded)
     activeRemoteSave.reset();
 
     if (!succeeded) {
-        // Keep the newest requested snapshot and continuation for an explicit retry.
-        // Retain the failed request too when no newer save is queued, so a second
-        // failure cannot discard an intent restored by the first retry.
+        // Preserve the latest requested snapshot, but a failed save cancels the
+        // close/open request. A later plain Save must not revive that action.
         if (!queuedRemoteSave) {
             queuedRemoteSave = std::move(completed);
         }
-        auto *message = new QMessageBox(QMessageBox::Critical, tr("Error"),
-                                       tr("The remote deck could not be saved. Please check your connection and try again."),
-                                       QMessageBox::Ok, this);
+        queuedRemoteSave->afterSave = {};
+        auto *message =
+            new QMessageBox(QMessageBox::Critical, tr("Error"),
+                            tr("The remote deck could not be saved. Please check your connection and try again."),
+                            QMessageBox::Ok, this);
         message->setAttribute(Qt::WA_DeleteOnClose);
         message->open();
         return;
@@ -575,19 +555,11 @@ void AbstractTabDeckEditor::finishRemoteSave(quint64 requestId, bool succeeded)
     queuedRemoteSave.reset();
     QPointer<AbstractTabDeckEditor> guard(this);
     const quint64 intent = leaveIntent;
-    // A completed upload changes the saved state even if newer edits are visible.
-    // Keep leave intents revision-bound, but let undo return to the actual saved
-    // snapshot. The checkpoint rejects acknowledgments for replaced documents.
-    const auto destination = deckStateManager->toLoadedDeck().lastLoadInfo;
-    if (completed.destination.remoteDeckId == destination.remoteDeckId &&
-        completed.destination.fileName == destination.fileName &&
-        completed.destination.fileFormat == destination.fileFormat) {
-        deckStateManager->markSaved(completed.savePoint);
+    if (matchesCurrentDeck(completed)) {
+        deckStateManager->setModified(false);
         if (!guard) {
             return;
         }
-    }
-    if (matchesCurrentDeck(completed)) {
         if (completed.afterSave) {
             // Leave the command callback before closing the tab or opening a modal
             // dialog. Check again after the queued turn and after modified listeners.
@@ -805,7 +777,17 @@ bool AbstractTabDeckEditor::confirmCloseWithContinuation(std::function<void()> a
             return false;
         }
         if (ret == QMessageBox::Save) {
-            return saveDeck(std::move(afterSave));
+            const bool applicationClose = !afterSave;
+            const bool saved = saveDeck(std::move(afterSave));
+            if (guard && applicationClose && !saved && activeRemoteSave) {
+                auto *notice =
+                    new QMessageBox(QMessageBox::Information, tr("Remote save in progress"),
+                                    tr("Your deck is being saved to the server. Quit again once the save finishes."),
+                                    QMessageBox::Ok, this);
+                notice->setAttribute(Qt::WA_DeleteOnClose);
+                notice->open();
+            }
+            return saved;
         } else if (ret != QMessageBox::Discard) {
             return false;
         }

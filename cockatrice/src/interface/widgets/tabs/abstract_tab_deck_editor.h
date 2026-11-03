@@ -12,14 +12,12 @@
 #include "libcockatrice/card/card_info.h"
 #include "tab.h"
 
-#include <libcockatrice/deck_list/deck_list_history_manager.h>
-
 #include <QMap>
 #include <QSize>
 #include <QString>
-#include <qtmetamacros.h>
 #include <functional>
 #include <optional>
+#include <qtmetamacros.h>
 
 class DeckStateManager;
 class CardDatabaseModel;
@@ -259,7 +257,6 @@ protected slots:
 private:
     struct RemoteSave
     {
-        DeckListHistoryManager::SavePoint savePoint;
         quint64 revision;
         LoadedDeck::LoadInfo destination;
         QString deckString;
