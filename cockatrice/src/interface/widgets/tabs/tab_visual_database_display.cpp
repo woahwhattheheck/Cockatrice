@@ -4,14 +4,12 @@
 #include "../cards/card_info_frame_widget.h"
 #include "../deck_editor/card_database_view.h"
 #include "../visual_database_display/visual_database_display_widget.h"
-#include "card_database_display_model.h"
 #include "card_database_model.h"
 #include "tab_supervisor.h"
 
 #include <QAction>
 #include <QDockWidget>
 #include <QHideEvent>
-#include <QItemSelectionModel>
 #include <QLabel>
 #include <QMenu>
 #include <QVBoxLayout>
@@ -56,35 +54,13 @@ TabVisualDatabaseDisplay::TabVisualDatabaseDisplay(TabSupervisor *_tabSupervisor
             &TabVisualDatabaseDisplay::inspectCard);
     connect(visualDatabaseDisplayWidget, &VisualDatabaseDisplayWidget::displayModeChanged, this, [this] {
         emit tabTextChanged(this, getTabText());
-        if (!visualDatabaseDisplayWidget->isVisualDisplayMode() && !cardInfo->getCard().isEmpty()) {
+        if (!visualDatabaseDisplayWidget->isVisualDisplayMode()) {
             auto *view = visualDatabaseDisplayWidget->getDatabaseView();
-            const auto matches = view->model()->match(view->model()->index(0, CardDatabaseModel::NameColumn),
-                                                     Qt::DisplayRole, cardInfo->getCard().getName(), 1,
-                                                     Qt::MatchExactly);
-            if (!matches.isEmpty()) {
-                view->setCurrentIndex(matches.first());
-                view->scrollTo(matches.first());
+            if (view->currentIndex().isValid()) {
+                view->scrollTo(view->currentIndex());
             }
         }
     });
-
-    // An invalid table selection does not emit CardDatabaseView::cardChanged.
-    // Clear the inspector explicitly so an empty result never shows stale rules.
-    auto *view = visualDatabaseDisplayWidget->getDatabaseView();
-    connect(view->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
-            [this](const QModelIndex &current) {
-                if (!visualDatabaseDisplayWidget->isVisualDisplayMode() && !current.isValid()) {
-                    inspectCard(ExactCard());
-                }
-            });
-    auto *model = visualDatabaseDisplayWidget->getDatabaseDisplayModel();
-    connect(model, &CardDatabaseDisplayModel::modelDirty, this, [this, model] {
-        if (model->rowCount() == 0) {
-            inspectCard(ExactCard());
-        }
-    });
-    connect(CardDatabaseManager::getInstance(), &CardDatabase::cardDatabaseReset, this,
-            [this] { inspectCard(ExactCard()); });
 
     inspectCard(ExactCard());
     TabVisualDatabaseDisplay::retranslateUi();
