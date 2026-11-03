@@ -614,3 +614,19 @@ if(WITH_ORACLE OR WITH_CLIENT)
     ${SETTINGS_INCLUDE_DIRS}
   )
 endif()
+# One-off announcements reuse the legacy CUSTOM notification event.
+cockatrice_add_test(
+  NAME
+  server_announcement_test
+  SOURCES
+  ${VERSION_STRING_CPP}
+  server_announcement_test.cpp
+  LIBS
+  libcockatrice_network
+  libcockatrice_network_server_remote
+  libcockatrice_rng
+  INCLUDE_DIRS
+  ${CMAKE_SOURCE_DIR}/servatrice/src
+  LABELS
+  server
+)
