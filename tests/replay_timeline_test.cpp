@@ -1,11 +1,14 @@
+#include "client/settings/cache_settings.h"
 #include "interface/widgets/replay/replay_manager.h"
 #include "interface/widgets/replay/replay_timeline_widget.h"
 #include "libcockatrice/protocol/pb/game_event_container.pb.h"
 #include "libcockatrice/protocol/pb/game_replay.pb.h"
+#include "libcockatrice/settings/interface_settings.h"
 
 #include <QApplication>
 #include <QImage>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 #include <gtest/gtest.h>
 
@@ -155,8 +158,94 @@ TEST(ReplayTimelineTest, ZeroDurationClickAppliesItsOnlyEvent)
     EXPECT_EQ(finished.size(), 1);
 }
 
+TEST(ReplayManagerTest, ExactEventSelectionDistinguishesEqualMillisecondTimestamps)
+{
+    auto *replay = new GameReplay;
+    for (int i = 0; i < 1001; ++i) {
+        replay->add_event_list()->set_seconds_elapsed(5);
+    }
+    ReplayManager manager(nullptr, replay);
+    ASSERT_EQ(manager.getReplayTimeline().at(0), 5000);
+    ASSERT_EQ(manager.getReplayTimeline().at(1), 5000);
+    int applied = 0;
+    QObject::connect(&manager, &ReplayManager::eventReplayed, [&applied] { ++applied; });
+    QObject::connect(&manager, &ReplayManager::rewound, [&applied] { applied = 0; });
+
+    manager.setTimeToEvent(1);
+    EXPECT_EQ(applied, 2);
+    manager.setTimeToEvent(0);
+    EXPECT_EQ(applied, 1);
+    manager.setTimeToEvent(1);
+    EXPECT_EQ(applied, 2);
+}
+
+TEST(ReplayManagerTest, ForwardSeekSupersedesBufferedRewind)
+{
+    auto &settings = SettingsCache::instance().userInterface();
+    const int previousBuffering = settings.getRewindBufferingMs();
+    settings.setRewindBufferingMs(20);
+    auto *replay = new GameReplay;
+    for (int second = 0; second <= 4; ++second) {
+        replay->add_event_list()->set_seconds_elapsed(second);
+    }
+    ReplayManager manager(nullptr, replay);
+    int applied = 0;
+    QObject::connect(&manager, &ReplayManager::eventReplayed, [&applied] { ++applied; });
+    QObject::connect(&manager, &ReplayManager::rewound, [&applied] { applied = 0; });
+    QSignalSpy rewound(&manager, &ReplayManager::rewound);
+
+    manager.setTime(4000);
+    manager.skipByAmount(-3000);
+    EXPECT_EQ(applied, 5);
+    manager.setTime(4000);
+    QTest::qWait(50);
+    EXPECT_EQ(applied, 5);
+    EXPECT_EQ(rewound.size(), 0);
+    settings.setRewindBufferingMs(previousBuffering);
+}
+
+TEST(ReplayManagerTest, PlaybackWaitsForBufferedRewindBeforeAdvancing)
+{
+    auto &settings = SettingsCache::instance().userInterface();
+    const int previousBuffering = settings.getRewindBufferingMs();
+    settings.setRewindBufferingMs(20);
+    auto *replay = new GameReplay;
+    for (int second = 0; second <= 4; ++second) {
+        replay->add_event_list()->set_seconds_elapsed(second);
+    }
+    ReplayManager manager(nullptr, replay);
+    int applied = 0;
+    QObject::connect(&manager, &ReplayManager::eventReplayed, [&applied] { ++applied; });
+    QObject::connect(&manager, &ReplayManager::rewound, [&applied] { applied = 0; });
+    QSignalSpy rewound(&manager, &ReplayManager::rewound);
+    QSignalSpy position(&manager, &ReplayManager::timeChanged);
+
+    manager.setTime(4000);
+    manager.startReplay();
+    manager.skipByAmount(-2000);
+    const auto positionCount = position.size();
+    EXPECT_TRUE(QMetaObject::invokeMethod(&manager, "replayTimerTimeout", Qt::DirectConnection));
+    EXPECT_EQ(applied, 5);
+    EXPECT_EQ(rewound.size(), 0);
+    EXPECT_EQ(position.size(), positionCount);
+    QTest::qWait(50);
+    EXPECT_EQ(rewound.size(), 1);
+    EXPECT_EQ(applied, 2);
+    EXPECT_TRUE(QMetaObject::invokeMethod(&manager, "replayTimerTimeout", Qt::DirectConnection));
+    EXPECT_EQ(applied, 3);
+    EXPECT_EQ(position.last().first().toInt(), 2200);
+    manager.stopReplay();
+    settings.setRewindBufferingMs(previousBuffering);
+}
+
 int main(int argc, char **argv)
 {
+    QTemporaryDir settingsDirectory;
+    if (!settingsDirectory.isValid()) {
+        return 1;
+    }
+    qputenv("XDG_CONFIG_HOME", settingsDirectory.path().toUtf8());
+    qputenv("XDG_DATA_HOME", settingsDirectory.path().toUtf8());
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);
