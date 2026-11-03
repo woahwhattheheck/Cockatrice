@@ -20,6 +20,7 @@
 
 #include "serversocketinterface.h"
 
+#include "color_identity.h"
 #include "deck_tag_serialization.h"
 #include "email_parser.h"
 #include "forwarded_address.h"
@@ -1024,22 +1025,6 @@ Response::ResponseCode AbstractServerSocketInterface::cmdDeckDel(const Command_D
 
     return Response::RespOk;
 }
-
-namespace
-{
-/** @brief Keeps only the WUBRG colors from a color identity string, deduplicated. */
-QString sanitizeColorIdentity(const QString &colorIdentity)
-{
-    QString sanitized;
-    for (const QChar &color : colorIdentity) {
-        const QChar upper = color.toUpper();
-        if (QStringLiteral("WUBRG").contains(upper) && !sanitized.contains(upper)) {
-            sanitized.append(upper);
-        }
-    }
-    return sanitized;
-}
-} // namespace
 
 Response::ResponseCode AbstractServerSocketInterface::cmdDeckUpload(const Command_DeckUpload &cmd,
                                                                     ResponseContainer &rc)

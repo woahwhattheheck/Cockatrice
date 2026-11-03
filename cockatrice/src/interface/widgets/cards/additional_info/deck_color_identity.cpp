@@ -1,6 +1,7 @@
 #include "deck_color_identity.h"
 
 #include "libcockatrice/card/card_info.h"
+#include "libcockatrice/card/game_specific_terms.h"
 
 #include <QChar>
 #include <QList>
@@ -13,20 +14,40 @@
 QString getDeckColorIdentity(const DeckList &deck, const CardDatabaseQuerier *db)
 {
     const QStringList cardList = deck.getCardList({DECK_ZONE_MAIN, DECK_ZONE_SIDE});
-    if (cardList.isEmpty()) {
+    if (!db || cardList.isEmpty()) {
         return {};
     }
 
     QSet<QChar> colorSet; // A set to collect unique color symbols (e.g., W, U, B, R, G)
+    bool hasResolvedCard = false;
 
     for (const QString &cardName : cardList) {
         CardInfoPtr currentCard = db->getCardInfo(cardName);
-        if (currentCard) {
-            const QString colors = currentCard->getColors(); // returns something like "WUB"
-            for (const QChar &color : colors) {
-                colorSet.insert(color);
-            }
+        if (!currentCard) {
+            continue;
         }
+        hasResolvedCard = true;
+
+        // Oracle's identity includes colored rules symbols, other faces and devoid
+        // cards. Older/custom databases may only provide the card's colors.
+        const QString colors =
+            (currentCard->hasProperty(Mtg::ColorIdentity) ? currentCard->getProperty(Mtg::ColorIdentity)
+                                                          : currentCard->getColors())
+                .trimmed()
+                .toUpper();
+        if (colors == QStringLiteral("C")) {
+            continue;
+        }
+        for (const QChar &color : colors) {
+            if (!QStringLiteral("WUBRG").contains(color)) {
+                return {};
+            }
+            colorSet.insert(color);
+        }
+    }
+
+    if (!hasResolvedCard) {
+        return {};
     }
 
     // Ensure the color identity is in WUBRG order
@@ -38,5 +59,7 @@ QString getDeckColorIdentity(const DeckList &deck, const CardDatabaseQuerier *db
         }
     }
 
-    return colorIdentity;
+    // Empty metadata is also used by old uploads and unloaded decks. Keep that
+    // distinct from a deck whose known cards have no colors in their identity.
+    return colorIdentity.isEmpty() ? QStringLiteral("C") : colorIdentity;
 }

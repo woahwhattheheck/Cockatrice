@@ -319,6 +319,7 @@ set(cockatrice_SOURCES
     src/interface/widgets/visual_deck_storage/visual_deck_storage_model.cpp
     src/interface/widgets/visual_deck_storage/visual_deck_storage_quick_settings_widget.cpp
     src/interface/widgets/visual_deck_storage/visual_deck_storage_search_widget.cpp
+    src/interface/widgets/visual_deck_storage/color_identity_filter.cpp
     src/interface/widgets/visual_deck_storage/visual_deck_storage_sort_filter_proxy_model.cpp
     src/interface/widgets/visual_deck_storage/visual_deck_storage_sort_widget.cpp
     src/interface/widgets/visual_deck_storage/visual_deck_storage_tag_filter_widget.cpp
