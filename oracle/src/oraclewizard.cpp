@@ -1,6 +1,7 @@
 #include "oraclewizard.h"
 
 #include "client/settings/cache_settings.h"
+#include "database_writer.h"
 #include "main.h"
 #include "oracleimporter.h"
 #include "pages.h"
@@ -17,6 +18,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QNetworkAccessManager>
+#include <QNetworkReply>
 #include <QSettings>
 #include <QVariant>
 #include <QWindow>
@@ -141,6 +143,12 @@ void OracleWizard::reject()
     }
 
     QWizard::reject();
+    // A hidden wizard does not close the application's last visible window.
+    // Stop background refreshes explicitly. If cards were already saved, the
+    // hosting client must reload them even if a later page failed or was cancelled.
+    if (backgroundMode) {
+        QCoreApplication::exit(hasSavedDatabase() ? 0 : 1);
+    }
 }
 
 void OracleWizard::runInBackground()
@@ -212,17 +220,10 @@ void OracleWizard::disableButtons()
 
 bool OracleWizard::saveTokensToFile(const QString &fileName)
 {
-    QFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "File open (w) failed for" << fileName;
+    QString error;
+    if (!OracleDatabase::saveXml(fileName, tokensData, &error)) {
+        qWarning() << error;
         return false;
     }
-
-    if (file.write(tokensData) == -1) {
-        qDebug() << "File write (w) failed for" << fileName;
-        return false;
-    }
-
-    file.close();
     return true;
 }

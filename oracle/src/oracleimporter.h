@@ -14,6 +14,7 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QSharedPointer>
 #include <QString>
 #include <QStringList>
 #include <libcockatrice/card/card_info.h>
@@ -22,6 +23,7 @@
 #include <utility>
 
 class CardRelation;
+class OracleSourceData;
 class QRegularExpression;
 
 // many users prefer not to see these sets with non english arts
@@ -178,10 +180,13 @@ private:
     QList<SetToDownload> allSets;
 
     /**
-     * The raw JSON text of the source document, retained for lazy per-set
-     * parsing during startImport(). Frees the card data as each set is imported.
+     * Source ownership precedes its byte view so the mapping stays alive through
+     * lazy per-set parsing. The byte-array API also supports owned in-memory data.
      */
+    QSharedPointer<OracleSourceData> rawSetsSource;
     QByteArray rawSetsData;
+
+    bool readSets(QByteArray data, QSharedPointer<OracleSourceData> source);
 
     /**
      * Whether readSetsFromByteArray() should report scan progress via
@@ -198,6 +203,11 @@ private:
      * the whole import (or racing it).
      */
     QAtomicInt importCancelled;
+    bool importSuccessful = false;
+    QString importError;
+
+    // Discard the incomplete in-memory database; the installed file is untouched.
+    int failImport(const QString &message);
 
     /**
      * The ISO-639 language code whose foreignData is imported; "en" by default.
@@ -248,7 +258,7 @@ private:
                             bool collectText = true);
 signals:
     void setIndexChanged(int cardsImported, int setIndex, const QString &setName);
-    void dataReadProgress(int bytesRead, int totalBytes);
+    void dataReadProgress(qint64 bytesRead, qint64 totalBytes);
 
 public:
     explicit OracleImporter(QObject *parent = nullptr);
@@ -278,7 +288,25 @@ public:
      * the wizard can hand over its decompressed buffer without copying it.
      */
     bool readSetsFromByteArray(QByteArray data);
+    bool readSetsFromSource(QSharedPointer<OracleSourceData> source, QString &error);
+    // Returns the complete selected-set count on success, zero on failure or cancellation.
     int startImport();
+    bool hasSuccessfulImport() const
+    {
+        return importSuccessful;
+    }
+    const QString &getImportError() const
+    {
+        return importError;
+    }
+    // Call on the owning thread before scheduling a worker, so a cancellation
+    // arriving before that worker starts is not lost.
+    void prepareImport()
+    {
+        importCancelled.storeRelease(0);
+        importSuccessful = false;
+        importError.clear();
+    }
     /**
      * @brief Requests an in-flight startImport() to stop at the next set boundary.
      *

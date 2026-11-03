@@ -5,6 +5,7 @@
 #include "libcockatrice/card/lazy_properties_hash.h"
 #include "libcockatrice/card/relation/card_relation_type.h"
 #include "libcockatrice/interfaces/noop_card_set_priority_controller.h"
+#include "oracle_source_data.h"
 #include "parsehelpers.h"
 
 #include <QChar>
@@ -100,12 +101,28 @@ static CardSet::Priority getSetPriority(const QString &setType, const QString &s
 
 bool OracleImporter::readSetsFromByteArray(QByteArray data)
 {
+    return readSets(std::move(data), {});
+}
+
+bool OracleImporter::readSetsFromSource(QSharedPointer<OracleSourceData> source, QString &error)
+{
+    if (!source || !source->map(error)) {
+        importSuccessful = false;
+        importError = error;
+        releaseSetData();
+        return false;
+    }
+    return readSets(source->bytes(), source);
+}
+
+bool OracleImporter::readSets(QByteArray data, QSharedPointer<OracleSourceData> source)
+{
+    importSuccessful = false;
+    importError.clear();
+    releaseSetData();
     const RawJson::ScanProgressCallback progress =
         progressReporting
-            ? [this](
-                  qsizetype bytesRead,
-                  qsizetype
-                      totalBytes) { emit dataReadProgress(static_cast<int>(bytesRead), static_cast<int>(totalBytes)); }
+            ? [this](qsizetype bytesRead, qsizetype totalBytes) { emit dataReadProgress(bytesRead, totalBytes); }
             : RawJson::ScanProgressCallback{};
 
     RawJson::ScanError error;
@@ -154,6 +171,7 @@ bool OracleImporter::readSetsFromByteArray(QByteArray data)
     }
     allSets = newSetList;
     rawSetsData = std::move(data);
+    rawSetsSource = std::move(source);
     return true;
 }
 
@@ -764,7 +782,15 @@ int OracleImporter::startImport()
 {
     static ICardSetPriorityController *noOpController = new NoopCardSetPriorityController();
 
-    importCancelled.storeRelease(0);
+    importSuccessful = false;
+    importError.clear();
+    sets.clear();
+    cards.clear();
+    localizedEntries.clear();
+    splitLocalizedTexts.clear();
+    if (allSets.isEmpty()) {
+        return failImport(tr("No set has been selected for import."));
+    }
 
     // Pre-allocate the cards hash to avoid rehashing during import. Keys are
     // distinct card names while raw ranges only count printings (AllPrintings
@@ -786,9 +812,7 @@ int OracleImporter::startImport()
 
     for (const SetToDownload &curSetToParse : allSets) {
         if (importCancelled.loadAcquire()) {
-            // The wizard was closed mid-import: stop at the next set boundary so
-            // the caller can wait for this future without processing every set.
-            break;
+            return failImport(tr("The card database import was cancelled."));
         }
 
         CardSetPtr newSet = CardSet::newInstance(noOpController, curSetToParse.getShortName(),
@@ -798,30 +822,22 @@ int OracleImporter::startImport()
         // parse only this set's slice of the raw document so the whole JSON tree is
         // never kept in memory at once
         const RawJson::SetDataRange &rawRange = curSetToParse.getRawRange();
-        const qsizetype rangeEnd = rawRange.start + rawRange.length;
-        if (rawRange.start < 0 || rawRange.length <= 0 || rangeEnd > rawSetsData.size()) {
-            // rawSetsData is cleared by releaseSetData() while SetToDownload copies
-            // taken from getSets() keep their ranges, and nothing else enforces the
-            // pairing — so never index past the buffer on stale/mismatched ranges.
-            qWarning() << "error: out-of-bounds raw range for set" << curSetToParse.getShortName() << "skipping";
-            ++setIndex;
-            emit setIndexChanged(0, setIndex, curSetToParse.getLongName());
-            continue;
+        if (rawRange.start < 0 || rawRange.length <= 0 || rawRange.start > rawSetsData.size() ||
+            rawRange.length > rawSetsData.size() - rawRange.start) {
+            return failImport(tr("The source data for set %1 is unavailable. Load the sets file again.")
+                                  .arg(curSetToParse.getShortName()));
         }
-        // sliced() shares the buffer instead of deep-copying the slice; the largest
-        // sets in AllPrintings are tens of MB, so the copy is worth avoiding here.
-        const QByteArray setBytes = rawSetsData.sliced(rawRange.start, rawRange.length);
+        // The source owner outlives parsing. A non-owning view avoids copying a
+        // large set out of the mapped file before QJsonDocument parses it.
+        const QByteArray setBytes = QByteArray::fromRawData(rawSetsData.constData() + rawRange.start, rawRange.length);
         QJsonParseError parseError;
         const QJsonDocument setDoc = QJsonDocument::fromJson(setBytes, &parseError);
         if (parseError.error != QJsonParseError::NoError) {
-            qWarning() << "error: parsing card data for set" << curSetToParse.getShortName() << ":"
-                       << parseError.errorString();
-            ++setIndex;
-            // Keep the progress accounting honest: a set that failed to parse
-            // still advanced the index, so report it (with zero imported cards)
-            // rather than letting SaveSetsPage's bar stall per failed set.
-            emit setIndexChanged(0, setIndex, curSetToParse.getLongName());
-            continue;
+            return failImport(
+                tr("Could not import set %1: %2").arg(curSetToParse.getShortName(), parseError.errorString()));
+        }
+        if (!setDoc.isObject() || !setDoc.object().value("cards").isArray()) {
+            return failImport(tr("Set %1 does not contain a card list.").arg(curSetToParse.getShortName()));
         }
 
         // Only add the set to the database once its slice parsed cleanly;
@@ -838,7 +854,14 @@ int OracleImporter::startImport()
         emit setIndexChanged(numCardsInSet, setIndex, curSetToParse.getLongName());
     }
 
+    if (importCancelled.loadAcquire()) {
+        return failImport(tr("The card database import was cancelled."));
+    }
+    if (cards.isEmpty()) {
+        return failImport(tr("No cards were imported. The existing card database has been kept."));
+    }
     applyLocalizedData();
+    importSuccessful = true;
 
     emit setIndexChanged(0, setIndex, QString());
 
@@ -846,8 +869,23 @@ int OracleImporter::startImport()
     return setIndex;
 }
 
+int OracleImporter::failImport(const QString &message)
+{
+    importSuccessful = false;
+    importError = message;
+    sets.clear();
+    cards.clear();
+    localizedEntries.clear();
+    splitLocalizedTexts.clear();
+    qWarning() << message;
+    return 0;
+}
+
 bool OracleImporter::saveToFile(const QString &fileName, const QString &sourceUrl, const QString &sourceVersion)
 {
+    if (!importSuccessful) {
+        return false;
+    }
     CockatriceXml4Parser parser(new NoopCardSetPriorityController());
 
     return parser.saveToFile(createDefaultMagicFormats(), sets, cards, fileName, sourceUrl, sourceVersion);
@@ -857,14 +895,17 @@ void OracleImporter::releaseSetData()
 {
     allSets.clear();
     rawSetsData.clear();
+    rawSetsSource.clear();
 }
 
 void OracleImporter::clear()
 {
+    prepareImport();
     sets.clear();
     cards.clear();
     allSets.clear();
     rawSetsData.clear();
+    rawSetsSource.clear();
     localizedEntries.clear();
     splitLocalizedTexts.clear();
 }
