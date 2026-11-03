@@ -1,11 +1,14 @@
+#include "client/settings/cache_settings.h"
 #include "interface/widgets/replay/replay_manager.h"
 #include "interface/widgets/replay/replay_timeline_widget.h"
 #include "libcockatrice/protocol/pb/game_event_container.pb.h"
 #include "libcockatrice/protocol/pb/game_replay.pb.h"
+#include "libcockatrice/settings/interface_settings.h"
 
 #include <QApplication>
 #include <QImage>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTest>
 #include <gtest/gtest.h>
 
@@ -155,10 +158,86 @@ TEST(ReplayTimelineTest, ZeroDurationClickAppliesItsOnlyEvent)
     EXPECT_EQ(finished.size(), 1);
 }
 
+TEST(ReplayTimelineTest, SelectsTheExactEventWhenMillisecondTimesMatch)
+{
+    auto *replay = new GameReplay;
+    for (int i = 0; i < 2001; ++i) {
+        replay->add_event_list()->set_seconds_elapsed(1);
+    }
+    ReplayManager manager(nullptr, replay);
+    ASSERT_EQ(manager.getReplayTimeline()[0], manager.getReplayTimeline()[1]);
+    int applied = 0;
+    QObject::connect(&manager, &ReplayManager::eventReplayed, [&applied] { ++applied; });
+    QObject::connect(&manager, &ReplayManager::rewound, [&applied] { applied = 0; });
+
+    manager.setTimeToEvent(1);
+    EXPECT_EQ(applied, 2);
+    manager.setTimeToEvent(0);
+    EXPECT_EQ(applied, 1);
+    manager.setTimeToEvent(1);
+    EXPECT_EQ(applied, 2);
+}
+
+TEST(ReplayTimelineTest, LaterSeekSupersedesBufferedRewind)
+{
+    auto *replay = new GameReplay;
+    for (const int second : {0, 1, 2, 3}) {
+        replay->add_event_list()->set_seconds_elapsed(second);
+    }
+    ReplayManager manager(nullptr, replay);
+    int applied = 0;
+    QObject::connect(&manager, &ReplayManager::eventReplayed, [&applied] { ++applied; });
+    QObject::connect(&manager, &ReplayManager::rewound, [&applied] { applied = 0; });
+    QSignalSpy rewound(&manager, &ReplayManager::rewound);
+
+    manager.setTime(2400);
+    ASSERT_EQ(applied, 3);
+    manager.skipByAmount(-2000);
+    manager.setTimeToEvent(3);
+    EXPECT_EQ(applied, 4);
+    QTest::qWait(SettingsCache::instance().userInterface().getRewindBufferingMs() + 50);
+    EXPECT_EQ(applied, 4);
+    EXPECT_EQ(rewound.size(), 0);
+}
+
+TEST(ReplayTimelineTest, PlaybackTicksPreserveBufferedRewindUntilItExpires)
+{
+    auto *replay = new GameReplay;
+    for (const int second : {0, 1, 2, 3}) {
+        replay->add_event_list()->set_seconds_elapsed(second);
+    }
+    ReplayManager manager(nullptr, replay);
+    int applied = 0;
+    QObject::connect(&manager, &ReplayManager::eventReplayed, [&applied] { ++applied; });
+    QObject::connect(&manager, &ReplayManager::rewound, [&applied] { applied = 0; });
+    QSignalSpy rewound(&manager, &ReplayManager::rewound);
+    QSignalSpy position(&manager, &ReplayManager::timeChanged);
+
+    manager.setTime(2400);
+    manager.skipByAmount(-2000);
+    ASSERT_EQ(position.last().first().toInt(), 400);
+    const auto notifications = position.size();
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_TRUE(QMetaObject::invokeMethod(&manager, "replayTimerTimeout", Qt::DirectConnection));
+    }
+    EXPECT_EQ(applied, 3);
+    EXPECT_EQ(rewound.size(), 0);
+    EXPECT_EQ(position.size(), notifications);
+
+    QTest::qWait(SettingsCache::instance().userInterface().getRewindBufferingMs() + 50);
+    EXPECT_EQ(rewound.size(), 1);
+    EXPECT_EQ(applied, 1);
+    ASSERT_TRUE(QMetaObject::invokeMethod(&manager, "replayTimerTimeout", Qt::DirectConnection));
+    EXPECT_EQ(position.last().first().toInt(), 600);
+    EXPECT_EQ(applied, 1);
+}
+
 int main(int argc, char **argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
+    QStandardPaths::setTestModeEnabled(true);
     QApplication app(argc, argv);
+    SettingsCache::instance().userInterface().setRewindBufferingMs(100);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
