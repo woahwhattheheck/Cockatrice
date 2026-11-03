@@ -8,8 +8,10 @@
 #include <QApplication>
 #include <QImage>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUuid>
 #include <gtest/gtest.h>
 
 namespace
@@ -240,6 +242,7 @@ TEST(ReplayManagerTest, PlaybackWaitsForBufferedRewindBeforeAdvancing)
 
 int main(int argc, char **argv)
 {
+    QStandardPaths::setTestModeEnabled(true);
     QTemporaryDir settingsDirectory;
     if (!settingsDirectory.isValid()) {
         return 1;
@@ -248,6 +251,9 @@ int main(int argc, char **argv)
     qputenv("XDG_DATA_HOME", settingsDirectory.path().toUtf8());
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName(QStringLiteral("CockatriceTest"));
+    QCoreApplication::setApplicationName(
+        QStringLiteral("replay-timeline-test-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
