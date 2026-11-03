@@ -13,6 +13,7 @@
 #include <QDateTime>
 #include <QList>
 #include <QModelIndex>
+#include <QPointer>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -93,7 +94,7 @@ public:
         return decks.size();
     }
 
-    /** @brief True while a refresh request is in flight and the grid has no data yet. */
+    /** @brief True while the current public-deck refresh request is in flight. */
     [[nodiscard]] bool isLoading() const
     {
         return loading;
@@ -109,21 +110,24 @@ signals:
     void loadFailed(const QString &message);
 
 private slots:
-    void decksReceived(const Response &response, const CommandContainer &commandContainer);
+    void decksReceived(const Response &response, quint64 sequence);
     void onLoadingTimeout();
 
 private:
-    void addFolder(const ServerInfo_DeckStorage_Folder &folder);
-    void addTreeItem(const ServerInfo_DeckStorage_TreeItem &item);
+    static QList<DeckEntry> entriesFromFolder(const ServerInfo_DeckStorage_Folder &folder);
+    [[nodiscard]] QList<int> filteredIndices(const QList<DeckEntry> &entries) const;
+    void replaceDecks(QList<DeckEntry> entries);
+    void finishRequest(quint64 sequence, const QString &error = {});
     void rebuildVisibleIndices();
     void setLoading(bool value);
 
-    AbstractClient *client;
+    QPointer<AbstractClient> client;
     QTimer *loadingTimeoutTimer;
     QList<DeckEntry> decks;
     QList<int> visibleIndices; ///< Row indices into `decks` that pass the current filters.
     bool loading = false;
-    int requestSequence = 0; ///< Monotonically increases per refresh; only the newest request may update the grid.
+    quint64 requestSequence =
+        0; ///< Changes on refresh, completion or cancellation; only the current request can update the grid.
 
     QString searchText;
     VisualDeckStorageSortFilterProxyModel::FilterMode colorFilterMode = VisualDeckStorageSortFilterProxyModel::Includes;
