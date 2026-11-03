@@ -153,12 +153,15 @@ VisualDatabaseDisplayWidget::VisualDatabaseDisplayWidget(QWidget *parent,
     connect(cardView, &CardDatabaseVisualView::cardHovered, this,
             &VisualDatabaseDisplayWidget::cardHoveredDatabaseDisplay);
     connect(visualDisplayModel, &QAbstractItemModel::modelReset, this, [this] {
-        if (!selectedCard.isEmpty() && databaseDisplayModel
-                                           ->match(databaseDisplayModel->index(0, CardDatabaseModel::NameColumn),
-                                                   Qt::DisplayRole, selectedCard.getName(), 1, Qt::MatchExactly)
-                                           .isEmpty()) {
-            selectCard(ExactCard());
+        if (selectedCard.isEmpty()) {
+            return;
         }
+        for (int row = 0; row < visualDisplayModel->rowCount(); ++row) {
+            if (visualDisplayModel->cardAt(row) == selectedCard) {
+                return;
+            }
+        }
+        selectCard(ExactCard());
     });
 
     const int cardSize = SettingsCache::instance().cardsDisplay().getVisualDatabaseDisplayCardSize();
@@ -353,13 +356,15 @@ void VisualDatabaseDisplayWidget::onSelectedCardChanged(const QString &cardName)
 void VisualDatabaseDisplayWidget::actAddCard(const QString &cardName, const QString &zoneName)
 {
     highlightAllSearchEdit();
-    ExactCard exactCard = CardDatabaseManager::query()->getPreferredCard(cardName);
+    const auto exactCard =
+        selectedCard.getName() == cardName ? selectedCard : CardDatabaseManager::query()->getPreferredCard(cardName);
     emit cardAdded(exactCard, zoneName);
 }
 
 void VisualDatabaseDisplayWidget::actDecrementCard(const QString &cardName, const QString &zoneName)
 {
-    ExactCard exactCard = CardDatabaseManager::query()->getPreferredCard(cardName);
+    const auto exactCard =
+        selectedCard.getName() == cardName ? selectedCard : CardDatabaseManager::query()->getPreferredCard(cardName);
     emit cardDecremented(exactCard, zoneName);
 }
 
