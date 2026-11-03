@@ -82,6 +82,7 @@ protected:
 
 TEST(ServerAnnouncement, ExistingAdminGateRejectsGuestsAndModerators)
 {
+    ASSERT_EQ(AdminCommand::ANNOUNCE, Command_Announce::ext.number());
     Server server;
     AdminGateHandler handler(&server);
     CommandContainer command;

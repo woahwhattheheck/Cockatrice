@@ -522,6 +522,7 @@ cockatrice_add_test(
   ${VERSION_STRING_CPP}
   server_announcement_test.cpp
   LIBS
+  libcockatrice_network
   libcockatrice_network_server_remote
   libcockatrice_rng
   INCLUDE_DIRS

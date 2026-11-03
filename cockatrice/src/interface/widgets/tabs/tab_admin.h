@@ -18,9 +18,27 @@ class QGroupBox;
 class QPushButton;
 class QSpinBox;
 class QLineEdit;
+class QPlainTextEdit;
+class QLabel;
 class QWidget;
 class Response;
 class TabSupervisor;
+
+class AnnouncementDialog : public QDialog
+{
+    Q_OBJECT
+private:
+    QPlainTextEdit *messageEdit;
+    QLabel *validationLabel;
+    QPushButton *sendButton;
+    bool isMessageValid() const;
+    void updateValidation();
+
+public:
+    explicit AnnouncementDialog(QWidget *parent = nullptr);
+    [[nodiscard]] QString getMessage() const;
+    void accept() override;
+};
 
 class ShutdownDialog : public QDialog
 {

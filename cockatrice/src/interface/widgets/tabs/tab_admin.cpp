@@ -5,12 +5,11 @@
 #include <QDialogButtonBox>
 #include <QGridLayout>
 #include <QGroupBox>
-#include <QInputDialog>
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QPointer>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -28,6 +27,58 @@
 class CommandContainer;
 class QVariant;
 class TabSupervisor;
+
+AnnouncementDialog::AnnouncementDialog(QWidget *parent) : QDialog(parent)
+{
+    auto *messageLabel = new QLabel(tr("One-off &message to users currently connected to this server instance:"));
+    messageEdit = new QPlainTextEdit;
+    messageLabel->setBuddy(messageEdit);
+    validationLabel = new QLabel;
+
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    sendButton = buttonBox->button(QDialogButtonBox::Ok);
+    sendButton->setText(tr("&Send"));
+    connect(buttonBox, &QDialogButtonBox::accepted, this, &AnnouncementDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, this, &AnnouncementDialog::reject);
+    connect(messageEdit, &QPlainTextEdit::textChanged, this, &AnnouncementDialog::updateValidation);
+
+    auto *mainLayout = new QVBoxLayout;
+    mainLayout->addWidget(messageLabel);
+    mainLayout->addWidget(messageEdit);
+    mainLayout->addWidget(validationLabel);
+    mainLayout->addWidget(buttonBox);
+    setLayout(mainLayout);
+    setWindowTitle(tr("Server announcement"));
+    updateValidation();
+}
+
+QString AnnouncementDialog::getMessage() const
+{
+    return messageEdit->toPlainText().simplified();
+}
+
+bool AnnouncementDialog::isMessageValid() const
+{
+    const QString message = getMessage();
+    return !message.isEmpty() && message.toUtf8().size() <= MAX_TEXT_LENGTH;
+}
+
+void AnnouncementDialog::updateValidation()
+{
+    const QString message = getMessage();
+    validationLabel->setText(message.isEmpty() ? tr("Enter a message.")
+                                               : tr("%1 of %2 UTF-8 bytes (whitespace is combined when sent).")
+                                                     .arg(message.toUtf8().size())
+                                                     .arg(MAX_TEXT_LENGTH));
+    sendButton->setEnabled(isMessageValid());
+}
+
+void AnnouncementDialog::accept()
+{
+    if (isMessageValid()) {
+        QDialog::accept();
+    }
+}
 
 ShutdownDialog::ShutdownDialog(QWidget *parent) : QDialog(parent)
 {
@@ -145,7 +196,9 @@ TabAdmin::TabAdmin(TabSupervisor *_tabSupervisor, AbstractClient *_client, bool 
 void TabAdmin::retranslateUi()
 {
     updateServerMessageButton->setText(tr("Update server &message"));
+    updateServerMessageButton->setToolTip(tr("Update the persistent message shown when users log in."));
     announceButton->setText(tr("Send &announcement"));
+    announceButton->setToolTip(tr("Send a one-off message to users currently connected to this server instance."));
     shutdownServerButton->setText(tr("&Shut down server"));
     reloadConfigButton->setText(tr("&Reload configuration"));
     adminGroupBox->setTitle(tr("Server administration functions"));
@@ -168,30 +221,13 @@ void TabAdmin::actUpdateServerMessage()
 
 void TabAdmin::actAnnounce()
 {
-    auto *dialog = new QInputDialog(this);
+    auto *dialog = new AnnouncementDialog(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(tr("Server announcement"));
-    dialog->setLabelText(tr("Message to users connected to this server instance:"));
-    dialog->setInputMode(QInputDialog::TextInput);
-    QPointer<AbstractClient> clientGuard(client);
-    connect(dialog, &QInputDialog::textValueSelected, this, [this, clientGuard](const QString &text) {
-        if (!clientGuard) {
-            return;
-        }
-        const QString message = text.simplified();
-        if (message.isEmpty() || message.toUtf8().size() > MAX_TEXT_LENGTH) {
-            auto *box =
-                new QMessageBox(QMessageBox::Warning, tr("Invalid announcement"),
-                                tr("Enter a nonempty message no longer than %1 UTF-8 bytes.").arg(MAX_TEXT_LENGTH),
-                                QMessageBox::Ok, this);
-            box->setAttribute(Qt::WA_DeleteOnClose);
-            box->open();
-            return;
-        }
-
+    connect(client, &QObject::destroyed, dialog, &QDialog::reject);
+    connect(dialog, &QDialog::accepted, this, [this, dialog]() {
         Command_Announce cmd;
-        cmd.set_message(message.toStdString());
-        auto *pending = clientGuard->prepareAdminCommand(cmd);
+        cmd.set_message(dialog->getMessage().toStdString());
+        auto *pending = client->prepareAdminCommand(cmd);
         connect(pending, &PendingCommand::finished, this, [this](const Response &response) {
             const bool accepted = response.response_code() == Response::RespOk;
             const QString title = accepted ? tr("Announcement") : tr("Announcement not sent");
@@ -204,7 +240,7 @@ void TabAdmin::actAnnounce()
             box->setAttribute(Qt::WA_DeleteOnClose);
             box->open();
         });
-        clientGuard->sendCommand(pending);
+        client->sendCommand(pending);
     });
     dialog->open();
 }
