@@ -24,34 +24,6 @@ VisualDeckStorageSortFilterProxyModel::VisualDeckStorageSortFilterProxyModel(QOb
     setDynamicSortFilter(false);
 }
 
-bool colorIdentityMatches(VisualDeckStorageSortFilterProxyModel::FilterMode mode,
-                          const QSet<QChar> &colors,
-                          const QString &identity)
-{
-    switch (mode) {
-        case VisualDeckStorageSortFilterProxyModel::ExactMatch: {
-            QSet<QChar> activeColorSet;
-            for (const QChar &color : colors) {
-                activeColorSet.insert(color.toUpper());
-            }
-
-            QSet<QChar> colorIdentitySet;
-            for (const QChar &color : identity) {
-                colorIdentitySet.insert(color.toUpper());
-            }
-
-            return activeColorSet == colorIdentitySet;
-        }
-        case VisualDeckStorageSortFilterProxyModel::Includes:
-            return std::all_of(colors.begin(), colors.end(),
-                               [&identity](const QChar &color) { return identity.contains(color); });
-        case VisualDeckStorageSortFilterProxyModel::Excludes:
-            return std::none_of(colors.begin(), colors.end(),
-                                [&identity](const QChar &color) { return identity.contains(color); });
-    }
-    return false;
-}
-
 void VisualDeckStorageSortFilterProxyModel::setSourceModel(QAbstractItemModel *model)
 {
     if (QAbstractItemModel *oldModel = sourceModel()) {

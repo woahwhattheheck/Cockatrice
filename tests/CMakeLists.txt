@@ -171,6 +171,22 @@ endfunction()
 
 # --- Unit tests ------------------------------------------------------------------
 
+cockatrice_add_test(
+  NAME
+  color_identity_test
+  SOURCES
+  ${VERSION_STRING_CPP}
+  color_identity_test.cpp
+  ${CMAKE_SOURCE_DIR}/cockatrice/src/interface/widgets/cards/additional_info/deck_color_identity.cpp
+  ${CMAKE_SOURCE_DIR}/cockatrice/src/interface/widgets/visual_deck_storage/color_identity_filter.cpp
+  ${CMAKE_SOURCE_DIR}/servatrice/src/color_identity.cpp
+  DEFINITIONS
+  CARDDB_DATADIR="${CMAKE_CURRENT_SOURCE_DIR}/carddatabase/data"
+  LIBS
+  libcockatrice_card
+  libcockatrice_deck_list
+)
+
 cockatrice_add_test(NAME expression_test SOURCES expression_test.cpp LIBS libcockatrice_utility)
 cockatrice_add_test(NAME clamped_arithmetic_test SOURCES clamped_arithmetic_test.cpp LIBS libcockatrice_utility)
 cockatrice_add_test(NAME test_age_formatting SOURCES test_age_formatting.cpp LIBS libcockatrice_utility)
