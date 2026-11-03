@@ -126,8 +126,8 @@ private:
     QList<DeckEntry> decks;
     QList<int> visibleIndices; ///< Row indices into `decks` that pass the current filters.
     bool loading = false;
-    bool resetting = false;
-    quint64 requestSequence = 0; ///< Changes on refresh, completion or cancellation; only the current request can update the grid.
+    quint64 requestSequence =
+        0; ///< Changes on refresh, completion or cancellation; only the current request can update the grid.
 
     QString searchText;
     VisualDeckStorageSortFilterProxyModel::FilterMode colorFilterMode = VisualDeckStorageSortFilterProxyModel::Includes;

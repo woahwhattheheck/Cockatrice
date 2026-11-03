@@ -2,13 +2,10 @@
 
 #include "../../../client/settings/cache_settings.h"
 
-#include <QMetaObject>
-#include <QPointer>
 #include <QTimer>
 #include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
-#include <utility>
 #include <google/protobuf/repeated_ptr_field.h>
 #include <libcockatrice/network/client/abstract/abstract_client.h>
 #include <libcockatrice/protocol/pb/command_deck_list_other_user.pb.h>
@@ -18,6 +15,7 @@
 #include <libcockatrice/protocol/pending_command.h>
 #include <libcockatrice/settings/network_settings.h>
 #include <string>
+#include <utility>
 
 class QObject;
 
@@ -39,10 +37,9 @@ RemotePublicDecksModel::RemotePublicDecksModel(AbstractClient *_client, QObject 
             // snapshot. A disconnect is a transport failure, not a user clear.
             const bool wasLoading = loading;
             const quint64 sequence = ++requestSequence;
-            const QPointer<RemotePublicDecksModel> guard(this);
             loadingTimeoutTimer->stop();
             setLoading(false);
-            if (guard && sequence == requestSequence && wasLoading) {
+            if (sequence == requestSequence && wasLoading) {
                 emit loadFailed(tr("The connection was lost while loading public decks. Reconnect and try again."));
             }
         }
@@ -154,20 +151,8 @@ QList<int> RemotePublicDecksModel::filteredIndices(const QList<DeckEntry> &entri
 
 void RemotePublicDecksModel::rebuildVisibleIndices()
 {
-    // A filter can be changed by a reset observer. Finish the current reset
-    // before publishing another one, and evaluate the latest filter values.
-    if (resetting) {
-        QMetaObject::invokeMethod(this, &RemotePublicDecksModel::rebuildVisibleIndices, Qt::QueuedConnection);
-        return;
-    }
-    const QPointer<RemotePublicDecksModel> guard(this);
-    resetting = true;
     beginResetModel();
-    if (!guard) {
-        return;
-    }
     visibleIndices = filteredIndices(decks);
-    resetting = false;
     endResetModel();
 }
 
@@ -176,28 +161,11 @@ void RemotePublicDecksModel::replaceDecks(QList<DeckEntry> entries, quint64 sequ
     if (sequence != requestSequence) {
         return;
     }
-    if (resetting) {
-        QMetaObject::invokeMethod(this, [this, entries = std::move(entries), sequence, completeRequest]() mutable {
-            replaceDecks(std::move(entries), sequence, completeRequest);
-        }, Qt::QueuedConnection);
-        return;
-    }
-    const QPointer<RemotePublicDecksModel> guard(this);
-    resetting = true;
     // Views must still be able to read the old rows in modelAboutToBeReset.
     beginResetModel();
-    if (!guard) {
-        return;
-    }
-    if (sequence == requestSequence) {
-        decks = std::move(entries);
-        visibleIndices = filteredIndices(decks);
-    }
-    resetting = false;
+    decks = std::move(entries);
+    visibleIndices = filteredIndices(decks);
     endResetModel();
-    if (!guard || sequence != requestSequence) {
-        return;
-    }
     if (completeRequest) {
         finishRequest(sequence);
     }
@@ -205,25 +173,21 @@ void RemotePublicDecksModel::replaceDecks(QList<DeckEntry> entries, quint64 sequ
 
 void RemotePublicDecksModel::refresh(const QString &userName)
 {
-    if (!client || client->getStatus() == StatusDisconnected ||
-        client->getStatus() == StatusDisconnecting) {
+    if (!client || client->getStatus() == StatusDisconnected || client->getStatus() == StatusDisconnecting) {
         const quint64 sequence = ++requestSequence;
-        const QPointer<RemotePublicDecksModel> guard(this);
         loadingTimeoutTimer->stop();
         setLoading(false);
-        if (guard && sequence == requestSequence) {
+        if (sequence == requestSequence) {
             emit loadFailed(tr("The server connection is unavailable. Reconnect and try again."));
         }
         return;
     }
-    const QPointer<RemotePublicDecksModel> guard(this);
     const QString requestedUser = userName;
     const quint64 sequence = ++requestSequence;
-    // Arm the timeout before notifying observers. A callback may clear the
-    // model or start a newer request, which owns its own timer and response.
+    // The active request owns its timeout and response.
     loadingTimeoutTimer->start();
     setLoading(true);
-    if (!guard || sequence != requestSequence || !client) {
+    if (sequence != requestSequence || !client) {
         return;
     }
     Command_DeckListOtherUser cmd;
@@ -243,14 +207,11 @@ void RemotePublicDecksModel::finishRequest(quint64 sequence, const QString &erro
     if (sequence != requestSequence) {
         return;
     }
-    const QPointer<RemotePublicDecksModel> guard(this);
     const QString failure = error;
     const quint64 completion = ++requestSequence;
     loadingTimeoutTimer->stop();
     setLoading(false);
-    // loadingChanged can close the tab or immediately retry. A completed
-    // request must never stop that retry's timer or display its old failure.
-    if (guard && completion == requestSequence && !failure.isEmpty()) {
+    if (completion == requestSequence && !failure.isEmpty()) {
         emit loadFailed(failure);
     }
 }
@@ -264,11 +225,10 @@ void RemotePublicDecksModel::onLoadingTimeout()
 
 void RemotePublicDecksModel::clear()
 {
-    const QPointer<RemotePublicDecksModel> guard(this);
     const quint64 sequence = ++requestSequence;
     loadingTimeoutTimer->stop();
     replaceDecks({}, sequence);
-    if (guard && sequence == requestSequence) {
+    if (sequence == requestSequence) {
         setLoading(false);
     }
 }
@@ -284,8 +244,7 @@ void RemotePublicDecksModel::setLoading(bool value)
 
 void RemotePublicDecksModel::decksReceived(const Response &response, quint64 sequence)
 {
-    // The current reply has arrived. Publishing its snapshot may wait for an
-    // active reset to finish, but that delay must not become a network timeout.
+    // The current reply has arrived; only validation and publication remain.
     loadingTimeoutTimer->stop();
     if (response.response_code() != Response::RespOk) {
         finishRequest(sequence, tr("Failed to load the user's public decks (server response code %1).")
