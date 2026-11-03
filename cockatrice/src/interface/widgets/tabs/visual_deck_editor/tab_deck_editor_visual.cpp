@@ -276,7 +276,11 @@ static QString zoneForClickModifiers(const Qt::KeyboardModifiers &modifiers)
 void TabDeckEditorVisual::processDatabaseCardClick(const QMouseEvent *event, const ExactCard &card)
 {
     if (event->button() == Qt::LeftButton) {
-        addCard(card, zoneForClickModifiers(event->modifiers()));
+        // A single click only selects the card for inspection. The second press
+        // of a double click adds exactly one copy, as in the table database view.
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            addCard(card, zoneForClickModifiers(event->modifiers()));
+        }
     } else if (event->button() == Qt::RightButton) {
         decrementCard(card, zoneForClickModifiers(event->modifiers()));
     } else if (event->button() == Qt::MiddleButton) {

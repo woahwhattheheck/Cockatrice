@@ -38,6 +38,8 @@ public:
      * @param factor Percentage in the range of the card size slider.
      */
     void setCardSizeFactor(int factor);
+    /// Highlights the exact printing selected by the owning database widget.
+    void setSelectedCard(const ExactCard &card);
 
 signals:
     /** @brief A card was pressed. The event is valid for the duration of the emission. */
@@ -47,12 +49,14 @@ signals:
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
     bool viewportEvent(QEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
 
 private:
+    bool handleCardClick(QMouseEvent *event);
     void updateHoveredRow(const QPoint &position);
     /// Pixels one wheel notch moves, scaled to the grid and the OS line count.
     [[nodiscard]] int wheelStep() const;

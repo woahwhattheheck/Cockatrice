@@ -25,13 +25,15 @@
 
 #include <QAction>
 #include <QIcon>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSlider>
 #include <QStringLiteral>
-#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -101,7 +103,6 @@ VisualDatabaseDisplayWidget::VisualDatabaseDisplayWidget(QWidget *parent,
     databaseView = new CardDatabaseView(this, databaseDisplayModel);
     databaseView->setObjectName("databaseView");
     databaseView->setFocusProxy(searchEdit);
-    databaseView->setItemDelegate(nullptr);
     databaseView->setVisible(false);
 
     // Without a deck model there is nothing to add cards to, so the zone menu stays hidden.
@@ -121,6 +122,14 @@ VisualDatabaseDisplayWidget::VisualDatabaseDisplayWidget(QWidget *parent,
     searchEdit->installEventFilter(databaseView->getKeySignals());
 
     connect(databaseView, &CardDatabaseView::cardChanged, this, &VisualDatabaseDisplayWidget::onSelectedCardChanged);
+    connect(databaseView->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
+            [this](const QModelIndex &current) {
+                if (!isVisualDisplayMode() && !current.isValid()) {
+                    selectCard(ExactCard());
+                }
+            });
+    connect(CardDatabaseManager::getInstance(), &CardDatabase::cardDatabaseReset, this,
+            [this] { selectCard(ExactCard()); });
     connect(databaseView, &CardDatabaseView::cardAdded, this, &VisualDatabaseDisplayWidget::actAddCard);
     connect(databaseView, &CardDatabaseView::cardDecremented, this, &VisualDatabaseDisplayWidget::actDecrementCard);
     connect(databaseView, &CardDatabaseView::edhrecClicked, this, &VisualDatabaseDisplayWidget::edhrecRequested);
@@ -135,10 +144,22 @@ VisualDatabaseDisplayWidget::VisualDatabaseDisplayWidget(QWidget *parent,
 
     cardView = new CardDatabaseVisualView(visualDisplayModel, this);
     cardView->setObjectName("visualCardView");
-    connect(cardView, &CardDatabaseVisualView::cardClicked, this,
-            &VisualDatabaseDisplayWidget::cardClickedDatabaseDisplay);
+    connect(cardView, &CardDatabaseVisualView::cardClicked, this, [this](QMouseEvent *event, const ExactCard &card) {
+        if (event->button() == Qt::LeftButton) {
+            selectCard(card);
+        }
+        emit cardClickedDatabaseDisplay(event, card);
+    });
     connect(cardView, &CardDatabaseVisualView::cardHovered, this,
             &VisualDatabaseDisplayWidget::cardHoveredDatabaseDisplay);
+    connect(visualDisplayModel, &QAbstractItemModel::modelReset, this, [this] {
+        if (!selectedCard.isEmpty() && databaseDisplayModel
+                                           ->match(databaseDisplayModel->index(0, CardDatabaseModel::NameColumn),
+                                                   Qt::DisplayRole, selectedCard.getName(), 1, Qt::MatchExactly)
+                                           .isEmpty()) {
+            selectCard(ExactCard());
+        }
+    });
 
     const int cardSize = SettingsCache::instance().cardsDisplay().getVisualDatabaseDisplayCardSize();
     cardSizeWidget = new CardSizeWidget(this, nullptr, cardSize);
@@ -270,13 +291,37 @@ void VisualDatabaseDisplayWidget::onDisplayModeChanged(bool checked)
         // Table mode
         cardView->setVisible(false);
         cardSizeWidget->setVisible(false);
-        databaseView->setItemDelegate(new QStyledItemDelegate(databaseView));
         databaseView->setVisible(true);
     } else {
         // Visual mode
         cardView->setVisible(true);
         cardSizeWidget->setVisible(true);
         databaseView->setVisible(false);
+    }
+    emit displayModeChanged();
+    if (checked) {
+        onSelectedCardChanged(databaseView->currentCardName());
+    }
+}
+
+void VisualDatabaseDisplayWidget::selectCard(const ExactCard &card)
+{
+    const bool changed = !(selectedCard == card);
+    selectedCard = card;
+
+    // Keep table and keyboard actions on the selected card without replacing its printing.
+    const QSignalBlocker blocker(databaseView->selectionModel());
+    const auto matches = databaseDisplayModel->match(databaseDisplayModel->index(0, CardDatabaseModel::NameColumn),
+                                                     Qt::DisplayRole, card.getName(), 1, Qt::MatchExactly);
+    if (card.isEmpty() || matches.isEmpty()) {
+        databaseView->selectionModel()->clear();
+    } else {
+        databaseView->setCurrentIndex(matches.first());
+    }
+
+    if (changed) {
+        cardView->setSelectedCard(card);
+        emit cardSelectedDatabaseDisplay(card);
     }
 }
 
@@ -297,7 +342,12 @@ void VisualDatabaseDisplayWidget::onSearchModelChanged()
 
 void VisualDatabaseDisplayWidget::onSelectedCardChanged(const QString &cardName)
 {
-    emit cardHoveredDatabaseDisplay(CardDatabaseManager::query()->getPreferredCard(cardName));
+    const auto card =
+        selectedCard.getName() == cardName ? selectedCard : CardDatabaseManager::query()->getPreferredCard(cardName);
+    if (!isVisualDisplayMode() || searchEdit->hasFocus()) {
+        selectCard(card);
+    }
+    emit cardHoveredDatabaseDisplay(card);
 }
 
 void VisualDatabaseDisplayWidget::actAddCard(const QString &cardName, const QString &zoneName)

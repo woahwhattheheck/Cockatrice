@@ -7,6 +7,8 @@
 #ifndef CARD_PICTURE_DELEGATE_H
 #define CARD_PICTURE_DELEGATE_H
 
+#include "libcockatrice/card/printing/exact_card.h"
+
 #include <QSize>
 #include <QStyledItemDelegate>
 #include <qtmetamacros.h>
@@ -33,6 +35,7 @@ public:
 
     /// The picture size inside a grid cell. The cell is this size plus SPACING.
     void setCardSize(const QSize &size);
+    void setSelectedCard(const ExactCard &card);
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
     [[nodiscard]] QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
@@ -40,6 +43,7 @@ public:
 private:
     CardDatabaseVisualDisplayModel *model;
     QSize cardSize;
+    ExactCard selectedCard;
 };
 
 #endif // CARD_PICTURE_DELEGATE_H

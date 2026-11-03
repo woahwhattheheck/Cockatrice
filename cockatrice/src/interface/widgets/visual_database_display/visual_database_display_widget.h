@@ -8,6 +8,7 @@
 #define VISUAL_DATABASE_DISPLAY_WIDGET_H
 
 #include "libcockatrice/card/card_info.h"
+#include "libcockatrice/card/printing/exact_card.h"
 
 #include <QString>
 #include <QStringList>
@@ -83,6 +84,8 @@ public slots:
 
 signals:
     void cardClickedDatabaseDisplay(QMouseEvent *event, const ExactCard &card);
+    void cardSelectedDatabaseDisplay(const ExactCard &card);
+    void displayModeChanged();
     void cardHoveredDatabaseDisplay(const ExactCard &hoveredCard);
 
     void cardAdded(const ExactCard &card, const QString &zoneName);
@@ -120,7 +123,9 @@ private:
     CardSizeWidget *cardSizeWidget;
 
     bool filtersInitialized = false;
+    ExactCard selectedCard;
 
+    void selectCard(const ExactCard &card);
     void initializeFilters();
     void highlightAllSearchEdit();
     void updateDisplayModeButton();
