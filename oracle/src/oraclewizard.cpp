@@ -143,9 +143,10 @@ void OracleWizard::reject()
 
     QWizard::reject();
     // A hidden wizard does not close the application's last visible window.
-    // Stop background refreshes explicitly so the hosting client receives failure.
+    // Stop background refreshes explicitly. If cards were already saved, the
+    // hosting client must reload them even if a later page failed or was cancelled.
     if (backgroundMode) {
-        QCoreApplication::exit(1);
+        QCoreApplication::exit(hasSavedDatabase() ? 0 : 1);
     }
 }
 
