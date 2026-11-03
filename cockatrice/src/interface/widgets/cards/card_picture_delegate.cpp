@@ -9,6 +9,8 @@
 
 #include <QPainter>
 #include <QPainterPath>
+#include <QPalette>
+#include <QPen>
 #include <QPixmap>
 #include <QRect>
 #include <QStyleOptionViewItem>
@@ -26,6 +28,11 @@ void CardPictureDelegate::setCardSize(const QSize &size)
     }
 
     cardSize = size;
+}
+
+void CardPictureDelegate::setSelectedCard(const ExactCard &card)
+{
+    selectedCard = card;
 }
 
 void CardPictureDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const
@@ -75,6 +82,15 @@ void CardPictureDelegate::paint(QPainter *painter, const QStyleOptionViewItem &o
     // between them without the device pixel ratio being applied twice.
     painter->drawPixmap(pictureRect, pixmap, QRectF(pixmap.rect()));
     painter->restore();
+
+    if (!selectedCard.isEmpty() && card == selectedCard) {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(QPen(option.palette.color(QPalette::Highlight), 3));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRoundedRect(QRectF(pictureRect).adjusted(1.5, 1.5, -1.5, -1.5), radius, radius);
+        painter->restore();
+    }
 }
 
 QSize CardPictureDelegate::sizeHint(const QStyleOptionViewItem & /*option*/, const QModelIndex & /*index*/) const

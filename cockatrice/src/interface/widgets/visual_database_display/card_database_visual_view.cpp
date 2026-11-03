@@ -48,8 +48,8 @@ CardDatabaseVisualView::CardDatabaseVisualView(CardDatabaseVisualDisplayModel *_
     // item height back on the next layout.
     verticalScrollBar()->setSingleStep(qMax(1, fontMetrics().height()));
 
-    // The grid is a read-only surface: clicks are actions on a card, not a
-    // selection, and they must not steal focus from the search field.
+    // The owning widget tracks the exact selected printing; QListView's row
+    // selection must not replace it or steal focus from the search field.
     setSelectionMode(QAbstractItemView::NoSelection);
     setEditTriggers(QAbstractItemView::NoEditTriggers);
     setFocusPolicy(Qt::NoFocus);
@@ -88,17 +88,39 @@ void CardDatabaseVisualView::setCardSizeFactor(int factor)
 
 void CardDatabaseVisualView::mousePressEvent(QMouseEvent *event)
 {
+    if (!handleCardClick(event)) {
+        QListView::mousePressEvent(event);
+    }
+}
+
+void CardDatabaseVisualView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (!handleCardClick(event)) {
+        QListView::mouseDoubleClickEvent(event);
+    }
+}
+
+void CardDatabaseVisualView::setSelectedCard(const ExactCard &card)
+{
+    if (auto *cardDelegate = qobject_cast<CardPictureDelegate *>(itemDelegate())) {
+        cardDelegate->setSelectedCard(card);
+        viewport()->update();
+    }
+}
+
+bool CardDatabaseVisualView::handleCardClick(QMouseEvent *event)
+{
     const QModelIndex index = indexAt(event->pos());
     if (index.isValid() && model != nullptr) {
         const ExactCard card = model->cardAt(index.row());
         if (card) {
             emit cardClicked(event, card);
             event->accept();
-            return;
+            return true;
         }
     }
 
-    QListView::mousePressEvent(event);
+    return false;
 }
 
 void CardDatabaseVisualView::mouseMoveEvent(QMouseEvent *event)
