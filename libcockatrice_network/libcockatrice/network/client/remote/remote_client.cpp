@@ -186,6 +186,7 @@ void RemoteClient::processServerIdentificationEvent(const Event_ServerIdentifica
     // (proto2 enums are closed: an unknown value parses as NoOptions and those
     // clients would fall back to plaintext passwords).
     serverSupportsChallengeResponse = event.has_supports_challenge_response() && event.supports_challenge_response();
+    serverSupportsCardArtCrop = event.supports_card_art_crop();
 
     if (getStatus() == StatusRequestingForgotPassword) {
         Command_ForgotPasswordRequest cmdForgotPasswordRequest;

@@ -4,6 +4,7 @@
 
 set(PROTO_FILES
     admin_commands.proto
+    card_art_crop.proto
     card_attributes.proto
     color.proto
     command_attach_card.proto

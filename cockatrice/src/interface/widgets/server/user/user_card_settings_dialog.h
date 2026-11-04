@@ -76,7 +76,9 @@ class UserCardArtSettingsDialog : public QDialog
     Q_OBJECT
 
 public:
-    explicit UserCardArtSettingsDialog(const CardArtParams &initial = {}, QWidget *parent = nullptr);
+    explicit UserCardArtSettingsDialog(const CardArtParams &initial = {},
+                                       QWidget *parent = nullptr,
+                                       bool allowCustomCrop = true);
 
     CardArtParams params() const;
 
@@ -84,6 +86,7 @@ private slots:
     void onCardNameChanged(const QString &name);
     void reloadPreview();
     void onParamChanged();
+    void editCrop();
 
 private:
     void setupUi();
@@ -111,12 +114,16 @@ private:
     QLabel *previewCaptionLabel;
     QGroupBox *previewGroup;
     QPushButton *removeBtn;
+    QPushButton *cropButton;
     QDoubleSpinBox *marginLSpin;
     QDoubleSpinBox *marginRSpin;
     CardArtPreviewWidget *preview;
 
     QPixmap currentPixmap;
+    QPixmap fullCardPixmap;
+    QRectF automaticCrop;
     CardArtParams currentParams;
+    bool cropEditingEnabled;
 };
 
 #endif // COCKATRICE_USER_CARD_ART_SETTINGS_DIALOG_H

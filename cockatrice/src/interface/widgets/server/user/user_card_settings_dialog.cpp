@@ -2,7 +2,9 @@
 
 #include "../../../card_picture_loader/card_picture_loader.h"
 #include "../../cards/art_crop_attribution.h"
+#include "../../cards/card_art_utils.h"
 #include "../../utility/completer_utils.h"
+#include "card_art_crop_dialog.h"
 #include "card_database_display_model.h"
 #include "card_database_model.h"
 #include "libcockatrice/card/card_info.h"
@@ -10,7 +12,6 @@
 #include "libcockatrice/card/printing/exact_card.h"
 #include "libcockatrice/card/printing/printing_info.h"
 #include "libcockatrice/card/set/card_set.h"
-#include "user_card_art_provider.h"
 #include "user_list_painter.h"
 
 #include <QBrush>
@@ -36,6 +37,7 @@
 #include <QRect>
 #include <QRectF>
 #include <QSharedPointer>
+#include <QSignalBlocker>
 #include <QSize>
 #include <QSizePolicy>
 #include <QVBoxLayout>
@@ -213,7 +215,8 @@ void CardArtPreviewWidget::restoreSnapshot()
     if (sameCrop(paramsAtFocusIn, params)) {
         return;
     }
-    params = paramsAtFocusIn;
+    params.verticalOffset = paramsAtFocusIn.verticalOffset;
+    params.zoom = paramsAtFocusIn.zoom;
     setAccessibleDescription(tr("Zoom %1×").arg(QString::number(params.zoom, 'f', 2)));
     update();
     emit paramsEdited(params);
@@ -319,8 +322,10 @@ void CardArtPreviewWidget::keyPressEvent(QKeyEvent *event)
     event->accept();
 }
 
-UserCardArtSettingsDialog::UserCardArtSettingsDialog(const CardArtParams &initial, QWidget *parent)
-    : QDialog(parent), currentParams(initial)
+UserCardArtSettingsDialog::UserCardArtSettingsDialog(const CardArtParams &initial,
+                                                     QWidget *parent,
+                                                     bool allowCustomCrop)
+    : QDialog(parent), currentParams(initial), cropEditingEnabled(allowCustomCrop)
 {
     // Legacy stored banners may carry zoom below the gesture floor or an out
     // of range offset. Normalize once on open so the preview renders filled
@@ -352,6 +357,10 @@ UserCardArtSettingsDialog::UserCardArtSettingsDialog(const CardArtParams &initia
             reloadPreview();
         }
     }
+    // Initial combo population may temporarily select another printing. Keep
+    // the saved image-specific crop after restoring the stored printing.
+    currentParams.crop = initial.crop;
+    reloadPreview();
     marginLSpin->setValue(currentParams.marginPctL);
     marginRSpin->setValue(currentParams.marginPctR);
 }
@@ -396,6 +405,14 @@ void UserCardArtSettingsDialog::initializeSearchBar()
                 onCardNameChanged(completion);
             });
 
+    // Editing the search invalidates the prior selected image immediately;
+    // completion or Return resolves the new card and starts its image load.
+    connect(searchBar, &QLineEdit::textEdited, this, [this](const QString &text) {
+        if (text != currentParams.cardName) {
+            onCardNameChanged({});
+        }
+    });
+
     // Also trigger a load when the user hits Return on a typed name
     connect(searchBar, &QLineEdit::returnPressed, this, [this]() { onCardNameChanged(searchBar->text()); });
 }
@@ -406,13 +423,21 @@ void UserCardArtSettingsDialog::setupUi()
 
     providerComboBox = new QComboBox;
     connect(providerComboBox, &QComboBox::currentIndexChanged, this, [this]() {
-        currentParams.cardProviderId = providerComboBox->currentData().toString();
+        const QString providerId = providerComboBox->currentData().toString();
+        if (currentParams.cardProviderId != providerId) {
+            currentParams.crop = {};
+        }
+        currentParams.cardProviderId = providerId;
         reloadPreview();
         onParamChanged();
     });
 
     marginLSpin = makeSpinBox(0.0, 0.95, currentParams.marginPctL, 0.01);
     marginRSpin = makeSpinBox(0.0, 0.95, currentParams.marginPctR, 0.01);
+
+    cropButton = new QPushButton;
+    cropButton->setEnabled(false);
+    connect(cropButton, &QPushButton::clicked, this, &UserCardArtSettingsDialog::editCrop);
 
     auto *form = new QFormLayout;
     cardNameLabel = new QLabel;
@@ -421,6 +446,7 @@ void UserCardArtSettingsDialog::setupUi()
     marginRLabel = new QLabel;
     form->addRow(cardNameLabel, searchBar);
     form->addRow(printingLabel, providerComboBox);
+    form->addRow(tr("Artwork:"), cropButton);
     form->addRow(marginLLabel, marginLSpin);
     form->addRow(marginRLabel, marginRSpin);
 
@@ -462,8 +488,10 @@ void UserCardArtSettingsDialog::setupUi()
     // Gestures are the only editors of offset and zoom on this surface.
     // Margins stay explicit numeric controls: they trim the strip's
     // sides and have no natural drag mapping.
-    connect(preview, &CardArtPreviewWidget::paramsEdited, this,
-            [this](const CardArtParams &edited) { currentParams = edited; });
+    connect(preview, &CardArtPreviewWidget::paramsEdited, this, [this](const CardArtParams &edited) {
+        currentParams.verticalOffset = edited.verticalOffset;
+        currentParams.zoom = edited.zoom;
+    });
 
     retranslateUi();
 }
@@ -481,10 +509,14 @@ void UserCardArtSettingsDialog::retranslateUi()
         tr("Drag to pan, scroll to zoom, arrow keys nudge, plus and minus zoom, Backspace or Esc restores."));
     previewGroup->setTitle(tr("Banner"));
     removeBtn->setText(tr("Remove Banner Card"));
+    cropButton->setText(tr("Choose artwork crop…"));
+    cropButton->setToolTip(cropEditingEnabled ? tr("Choose the artwork shown in banners and profile popups.")
+                                              : tr("This server does not support custom artwork crops."));
 }
 
 void UserCardArtSettingsDialog::populateProviderCombo(const QString &cardName)
 {
+    const QSignalBlocker blockProviders(providerComboBox);
     providerComboBox->clear();
 
     auto card = CardDatabaseManager::query()->getCard({cardName});
@@ -511,33 +543,49 @@ void UserCardArtSettingsDialog::populateProviderCombo(const QString &cardName)
 
 void UserCardArtSettingsDialog::onCardNameChanged(const QString &name)
 {
-    if (name.isEmpty()) {
-        currentPixmap = QPixmap();
-        preview->setPixmap(currentPixmap);
-        return;
-    }
+    disconnect(pixmapUpdatedConnection);
+    currentPixmap = {};
+    fullCardPixmap = {};
+    cropButton->setEnabled(false);
+    preview->setPixmap(currentPixmap);
+    preview->setAttribution({});
 
     const ExactCard card = CardDatabaseManager::query()->getCard({name});
-    if (!card) {
-        currentPixmap = QPixmap();
-        preview->setPixmap(currentPixmap);
+    if (name.isEmpty() || !card) {
+        currentParams.cardName.clear();
+        currentParams.cardProviderId.clear();
+        const QSignalBlocker blockProviders(providerComboBox);
         providerComboBox->clear();
+        preview->setParams(currentParams);
         return;
     }
 
+    const QString previousCard = currentParams.cardName;
+    const QString previousProvider = currentParams.cardProviderId;
     currentParams.cardName = name;
-
     populateProviderCombo(name);
+    if (previousCard == name) {
+        const int samePrinting = providerComboBox->findData(previousProvider);
+        if (samePrinting >= 0) {
+            const QSignalBlocker blockProviders(providerComboBox);
+            providerComboBox->setCurrentIndex(samePrinting);
+        }
+    }
 
     if (providerComboBox->count() == 0) {
         // No printings found for this card, nothing to preview.
         currentPixmap = QPixmap();
+        fullCardPixmap = {};
+        cropButton->setEnabled(false);
         preview->setPixmap(currentPixmap);
         currentParams.cardProviderId.clear();
         return;
     }
 
     currentParams.cardProviderId = providerComboBox->currentData().toString();
+    if (previousCard != name || previousProvider != currentParams.cardProviderId) {
+        currentParams.crop = {};
+    }
     reloadPreview();
 }
 
@@ -570,6 +618,12 @@ void UserCardArtSettingsDialog::reloadPreview()
     CardPictureLoader::getPixmap(fullRes, card, QSize(745, 1040));
 
     if (fullRes.isNull()) {
+        currentPixmap = {};
+        preview->setPixmap(currentPixmap);
+        preview->setParams(currentParams);
+        preview->setAttribution({});
+        fullCardPixmap = {};
+        cropButton->setEnabled(false);
         // Not loaded yet, wait for the signal instead of giving up.
         // card.getCardPtr() is a CardInfoPtr (QSharedPointer<CardInfo>),
         // .data() gives the raw QObject* needed for connect().
@@ -580,13 +634,18 @@ void UserCardArtSettingsDialog::reloadPreview()
         return;
     }
 
-    currentPixmap = UserCardArtProvider::cropCardArt(fullRes, card);
+    fullCardPixmap = CardArtUtils::rotateSidewaysLayoutArt(fullRes, card);
+    const QRect automatic =
+        CardArtUtils::cardArtCropRect(fullCardPixmap.size(), card.getInfo().getUiAttributes().landscapeOrientation);
+    automaticCrop = QRectF(
+        double(automatic.x()) / fullCardPixmap.width(), double(automatic.y()) / fullCardPixmap.height(),
+        double(automatic.width()) / fullCardPixmap.width(), double(automatic.height()) / fullCardPixmap.height());
+    currentPixmap = CardArtUtils::cropCardArt(fullRes, card, currentParams.crop);
+    cropButton->setEnabled(cropEditingEnabled);
     preview->setPixmap(currentPixmap);
     preview->setParams(currentParams);
 
-    // Only attribute the art once the new pixmap is actually displayed, so a
-    // cache miss (which keeps the previous pixmap on screen) doesn't pair the
-    // new card's attribution with the old card's art.
+    // Attribute only the image currently displayed.
     preview->setAttribution(buildArtAttribution(card));
 }
 
@@ -595,4 +654,22 @@ void UserCardArtSettingsDialog::onParamChanged()
     currentParams.marginPctL = marginLSpin->value();
     currentParams.marginPctR = marginRSpin->value();
     preview->setParams(currentParams);
+}
+
+void UserCardArtSettingsDialog::editCrop()
+{
+    if (!cropEditingEnabled || fullCardPixmap.isNull()) {
+        return;
+    }
+    auto *dialog = new CardArtCropDialog(fullCardPixmap, currentParams.crop, automaticCrop, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    const QString cardName = currentParams.cardName;
+    const QString providerId = currentParams.cardProviderId;
+    connect(dialog, &QDialog::accepted, this, [this, dialog, cardName, providerId] {
+        if (currentParams.cardName == cardName && currentParams.cardProviderId == providerId) {
+            currentParams.crop = dialog->selectedCrop();
+            reloadPreview();
+        }
+    });
+    dialog->open();
 }

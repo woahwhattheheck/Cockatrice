@@ -138,6 +138,7 @@ protected:
     QString userName, password, email, country, realName, token;
     bool serverSupportsPasswordHash;
     bool serverSupportsChallengeResponse;
+    bool serverSupportsCardArtCrop = false;
     void setStatus(ClientStatus _status);
     int getNewCmdId()
     {
@@ -170,6 +171,10 @@ public:
     bool getServerSupportsPasswordHash() const
     {
         return serverSupportsPasswordHash;
+    }
+    bool getServerSupportsCardArtCrop() const
+    {
+        return serverSupportsCardArtCrop;
     }
     bool getServerSupportsChallengeResponse() const
     {

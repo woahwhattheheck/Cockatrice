@@ -12,16 +12,21 @@
 #include <QChar>
 #include <QMetaObject>
 #include <QPointer>
-#include <QRect>
 #include <QSize>
 #include <QStringList>
 #include <libcockatrice/card/database/card_database_manager.h>
 #include <libcockatrice/utility/card_ref.h>
 #include <memory>
 
-static QString makeKey(const QString &user, const QString &card, const QString &providerId)
+QString
+UserCardArtProvider::cacheKey(const QString &user, const QString &card, const QString &providerId, const QRectF &crop)
 {
-    return user + u'|' + card + u'|' + providerId;
+    QString key = user + u'|' + card + u'|' + providerId;
+    if (!crop.isEmpty()) {
+        key += u'|' + QString::number(crop.x(), 'g', 17) + u',' + QString::number(crop.y(), 'g', 17) + u',' +
+               QString::number(crop.width(), 'g', 17) + u',' + QString::number(crop.height(), 'g', 17);
+    }
+    return key;
 }
 
 UserCardArtProvider::UserCardArtProvider(QObject *parent) : QObject(parent)
@@ -45,13 +50,16 @@ const QMap<QString, QPixmap> &UserCardArtProvider::cache() const
     return cardArtCache;
 }
 
-void UserCardArtProvider::requestCardArt(const QString &userName, const QString &cardName, const QString &providerId)
+void UserCardArtProvider::requestCardArt(const QString &userName,
+                                         const QString &cardName,
+                                         const QString &providerId,
+                                         const QRectF &crop)
 {
     if (cardName.isEmpty()) {
         return;
     }
 
-    const QString key = makeKey(userName, cardName, providerId);
+    const QString key = cacheKey(userName, cardName, providerId, crop);
 
     if (pending.contains(key)) {
         return;
@@ -61,30 +69,9 @@ void UserCardArtProvider::requestCardArt(const QString &userName, const QString 
     }
 
     pending.insert(key);
-    queue.enqueue(key);
+    queue.enqueue({key, userName, cardName, providerId, crop});
 
     processQueue();
-}
-
-QPixmap UserCardArtProvider::cropCardArt(const QPixmap &fullRes, const ExactCard &card)
-{
-    QPixmap source = fullRes;
-
-    // Sideways-layout cards (plane, siege/battle, split) store their landscape
-    // artwork rotated 90° inside a portrait frame. Rotate it upright first so
-    // the crop below lands on the horizontal art, mirroring the way
-    // CardInfoPictureWidget displays these cards.
-    const bool landscape = card.getInfo().getUiAttributes().landscapeOrientation;
-    source = CardArtUtils::rotateSidewaysLayoutArt(source, card);
-
-    const QSize sz = source.size();
-    const int marginX = sz.width() * 0.07;
-    const int topMargin = landscape ? sz.height() * 0.05 : sz.height() * 0.11;
-    const int bottomMargin = landscape ? sz.height() * 0.42 : sz.height() * 0.45;
-
-    const QRect artRect(marginX, topMargin, sz.width() - 2 * marginX, sz.height() - topMargin - bottomMargin);
-
-    return source.copy(artRect.intersected(source.rect()));
 }
 
 void UserCardArtProvider::insertIntoCache(const QString &key, const QPixmap &pixmap)
@@ -110,17 +97,12 @@ void UserCardArtProvider::processQueue()
     }
 
     while (!queue.isEmpty()) {
-        const QString key = queue.dequeue();
-
-        const QStringList parts = key.split(u'|');
-        if (parts.size() != 3) {
-            pending.remove(key);
-            continue;
-        }
-
-        const QString userName = parts.at(0);
-        const QString cardName = parts.at(1);
-        const QString providerId = parts.at(2);
+        const ArtRequest request = queue.dequeue();
+        const QString key = request.key;
+        const QString userName = request.userName;
+        const QString cardName = request.cardName;
+        const QString providerId = request.providerId;
+        const QRectF crop = request.crop;
 
         ExactCard card = CardDatabaseManager::query()->getCard({cardName, providerId});
 
@@ -134,7 +116,7 @@ void UserCardArtProvider::processQueue()
 
         // Synchronous hit (already loaded/on disk)
         if (!fullRes.isNull()) {
-            insertIntoCache(key, cropCardArt(fullRes, card));
+            insertIntoCache(key, CardArtUtils::cropCardArt(fullRes, card, crop));
             pending.remove(key);
 
             emit cardArtUpdated(userName);
@@ -147,7 +129,7 @@ void UserCardArtProvider::processQueue()
         auto conn = std::make_shared<QMetaObject::Connection>();
 
         *conn = connect(card.getCardPtr().data(), &CardInfo::pixmapUpdated, this,
-                        [self, key, userName, card, conn]() mutable {
+                        [self, key, userName, card, crop, conn]() mutable {
                             if (!self) {
                                 return;
                             }
@@ -158,7 +140,7 @@ void UserCardArtProvider::processQueue()
                             CardPictureLoader::getPixmap(fullRes, card, QSize(745, 1040));
 
                             if (!fullRes.isNull()) {
-                                self->insertIntoCache(key, self->cropCardArt(fullRes, card));
+                                self->insertIntoCache(key, CardArtUtils::cropCardArt(fullRes, card, crop));
                             }
 
                             self->pending.remove(key);

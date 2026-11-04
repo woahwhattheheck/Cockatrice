@@ -855,7 +855,7 @@ void UserListWidget::showPopupForUser(UserListTWI *item)
     avatarProvider->requestAvatar(userName); // ensure the hovered user's avatar is fetched promptly
     if (cardArtParamsMap.contains(userName)) {
         const CardArtParams &params = cardArtParamsMap.value(userName);
-        cardArtProvider->requestCardArt(userName, params.cardName, params.cardProviderId);
+        cardArtProvider->requestCardArt(userName, params.cardName, params.cardProviderId, params.crop);
     }
 
     const ServerInfo_User &info = item->getUserInfo();
@@ -1052,7 +1052,7 @@ void UserListWidget::requestVisibleItemResources()
         avatarProvider->requestAvatar(userName);
         if (cardArtParamsMap.contains(userName)) {
             const CardArtParams &params = cardArtParamsMap.value(userName);
-            cardArtProvider->requestCardArt(userName, params.cardName, params.cardProviderId);
+            cardArtProvider->requestCardArt(userName, params.cardName, params.cardProviderId, params.crop);
         }
     };
 
@@ -1149,8 +1149,12 @@ void UserListWidget::updateCardArtParams(const ServerInfo_User &user, const QStr
         params.marginPctR = cap.margin_pct_r();
         params.verticalOffset = cap.vertical_offset();
         params.zoom = cap.zoom();
+        if (cap.has_crop()) {
+            const auto &crop = cap.crop();
+            params.crop = QRectF(crop.left(), crop.top(), crop.width(), crop.height());
+        }
         cardArtParamsMap.insert(userName, params);
-        cardArtProvider->requestCardArt(userName, params.cardName, params.cardProviderId);
+        cardArtProvider->requestCardArt(userName, params.cardName, params.cardProviderId, params.crop);
     }
     // Intentionally no removal branch: buddy/ignore list copies never carry
     // card_art_params (the server omits the column), so a params-less copy here

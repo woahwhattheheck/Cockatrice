@@ -6,11 +6,10 @@
 #include <QObject>
 #include <QPixmap>
 #include <QQueue>
+#include <QRectF>
 #include <QSet>
 #include <QString>
 #include <qtmetamacros.h>
-
-class ExactCard;
 
 class UserCardArtProvider : public QObject
 {
@@ -19,9 +18,13 @@ class UserCardArtProvider : public QObject
 public:
     explicit UserCardArtProvider(QObject *parent = nullptr);
 
-    void requestCardArt(const QString &userName, const QString &cardName, const QString &providerId);
+    void requestCardArt(const QString &userName,
+                        const QString &cardName,
+                        const QString &providerId,
+                        const QRectF &crop = {});
     const QMap<QString, QPixmap> &cache() const;
-    static QPixmap cropCardArt(const QPixmap &fullRes, const ExactCard &card);
+    static QString
+    cacheKey(const QString &userName, const QString &cardName, const QString &providerId, const QRectF &crop = {});
 
 signals:
     void cardArtUpdated(const QString &userName);
@@ -35,7 +38,12 @@ private:
     QList<QString> cacheInsertionOrder; // FIFO eviction
     QMap<QString, QPixmap> cardArtCache;
     QSet<QString> pending;
-    QQueue<QString> queue;
+    struct ArtRequest
+    {
+        QString key, userName, cardName, providerId;
+        QRectF crop;
+    };
+    QQueue<ArtRequest> queue;
 
     void processQueue();
     void insertIntoCache(const QString &key, const QPixmap &pixmap);

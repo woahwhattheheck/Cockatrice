@@ -333,9 +333,13 @@ void UserInfoBox::actBannerCard()
         initial.marginPctR = cap.margin_pct_r();
         initial.verticalOffset = cap.vertical_offset();
         initial.zoom = cap.zoom();
+        if (cap.has_crop()) {
+            const auto &crop = cap.crop();
+            initial.crop = QRectF(crop.left(), crop.top(), crop.width(), crop.height());
+        }
     }
 
-    UserCardArtSettingsDialog dlg(initial, this);
+    UserCardArtSettingsDialog dlg(initial, this, client->getServerSupportsCardArtCrop());
     if (dlg.exec() != QDialog::Accepted) {
         return;
     }
@@ -350,6 +354,13 @@ void UserInfoBox::actBannerCard()
         cmd.set_margin_pct_r(p.marginPctR);
         cmd.set_vertical_offset(p.verticalOffset);
         cmd.set_zoom(p.zoom);
+        if (client->getServerSupportsCardArtCrop() && !p.crop.isEmpty()) {
+            auto *crop = cmd.mutable_crop();
+            crop->set_left(p.crop.x());
+            crop->set_top(p.crop.y());
+            crop->set_width(p.crop.width());
+            crop->set_height(p.crop.height());
+        }
     }
 
     PendingCommand *pend = client->prepareSessionCommand(cmd);

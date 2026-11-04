@@ -27,6 +27,7 @@ struct CardArtParams
     double marginPctR = 0.02;
     double verticalOffset = 0.35;
     double zoom = 1.0;
+    QRectF crop; // normalized bounds in the full upright image; empty keeps automatic crop
 };
 
 class UserListPainter
