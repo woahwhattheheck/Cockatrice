@@ -171,6 +171,19 @@ endfunction()
 
 # --- Unit tests ------------------------------------------------------------------
 
+# Download destinations and native payloads are pure helpers; no storage tab is needed.
+cockatrice_add_test(
+  NAME
+  remote_deck_download_test
+  SOURCES
+  remote_deck_download_test.cpp
+  ${CMAKE_SOURCE_DIR}/cockatrice/src/interface/deck_loader/remote_deck_download.cpp
+  LIBS
+  libcockatrice_deck_list
+  INCLUDE_DIRS
+  ${CMAKE_SOURCE_DIR}/cockatrice/src/interface/deck_loader
+)
+
 cockatrice_add_test(
   NAME
   color_identity_test
