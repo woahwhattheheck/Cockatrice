@@ -10,6 +10,7 @@
 #include "libcockatrice/protocol/pb/serverinfo_game.pb.h"
 #include "libcockatrice/protocol/pb/serverinfo_user.pb.h"
 #include "libcockatrice/protocol/pb/session_commands.pb.h"
+#include "user_card_art_provider.h"
 #include "user_level.h"
 #include "user_list_painter.h"
 
@@ -702,7 +703,8 @@ void UserInfoPopup::refreshHeader()
     const CardArtParams params = (cardArtParamsMap && cardArtParamsMap->contains(currentUser))
                                      ? cardArtParamsMap->value(currentUser)
                                      : CardArtParams{};
-    const QString artKey = currentUser + u'|' + params.cardName + u'|' + params.cardProviderId;
+    const QString artKey =
+        UserCardArtProvider::cacheKey(currentUser, params.cardName, params.cardProviderId, params.crop);
     const QPixmap cardArt = (cardArtCache && !params.cardName.isEmpty()) ? cardArtCache->value(artKey) : QPixmap{};
     header->setUserData(currentUserInfo, currentOnline, avatar, cardArt, params);
 }

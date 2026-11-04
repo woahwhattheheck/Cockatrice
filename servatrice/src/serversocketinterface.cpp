@@ -21,6 +21,7 @@
 #include "serversocketinterface.h"
 
 #include "announcement_utils.h"
+#include "card_art_crop_utils.h"
 #include "color_identity.h"
 #include "deck_tag_serialization.h"
 #include "email_parser.h"
@@ -77,6 +78,7 @@
 #include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/repeated_ptr_field.h>
@@ -211,6 +213,7 @@ bool AbstractServerSocketInterface::initSession()
     identEvent.set_server_name(servatrice->getServerName().toStdString());
     identEvent.set_server_version(VERSION_STRING);
     identEvent.set_protocol_version(protocolVersion);
+    identEvent.set_supports_card_art_crop(true);
     if (servatrice->getAuthenticationMethod() == Servatrice::AuthenticationSql) {
         // Challenge-response is advertised in every strictness mode: legacy accounts keep
         // logging in with the legacy hash, but already-migrated scrypt rows are always
@@ -3623,6 +3626,11 @@ Response::ResponseCode AbstractServerSocketInterface::cmdSetCardArtParams(const 
         return Response::RespOk;
     }
 
+    if ((cmd.has_crop() && !CardArtCropUtils::isValid(cmd.crop())) || !std::isfinite(cmd.margin_pct_l()) ||
+        !std::isfinite(cmd.margin_pct_r()) || !std::isfinite(cmd.vertical_offset()) || !std::isfinite(cmd.zoom())) {
+        return Response::RespInvalidData;
+    }
+
     if (!sqlInterface->isCardArtAllowed(cardName, cardProviderId)) {
         return Response::RespFunctionNotAllowed;
     }
@@ -3641,6 +3649,9 @@ Response::ResponseCode AbstractServerSocketInterface::cmdSetCardArtParams(const 
     obj["marginPctR"] = marginPctR;
     obj["verticalOffset"] = verticalOffset;
     obj["zoom"] = zoom;
+    if (cmd.has_crop()) {
+        obj["crop"] = CardArtCropUtils::toJson(cmd.crop());
+    }
     const QString json = QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 
     QSqlQuery *query = sqlInterface->prepareQuery("update {prefix}_users set card_art_params=:params where id=:id");
@@ -3658,8 +3669,12 @@ Response::ResponseCode AbstractServerSocketInterface::cmdSetCardArtParams(const 
     cap->set_margin_pct_r(marginPctR);
     cap->set_vertical_offset(verticalOffset);
     cap->set_zoom(zoom);
+    if (cmd.has_crop()) {
+        cap->mutable_crop()->CopyFrom(cmd.crop());
+    } else {
+        cap->clear_crop();
+    }
 
-    const QString name = QString::fromStdString(userInfo->name());
     server->broadcastUserInfoUpdate(this);
 
     return Response::RespOk;

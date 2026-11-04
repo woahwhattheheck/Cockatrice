@@ -268,6 +268,7 @@ set(cockatrice_SOURCES
     src/interface/widgets/server/user/user_avatar_provider.cpp
     src/interface/widgets/server/user/user_card_art_provider.cpp
     src/interface/widgets/server/user/user_card_settings_dialog.cpp
+  src/interface/widgets/server/user/card_art_crop_dialog.cpp
     src/interface/widgets/server/user/user_context_menu.cpp
     src/interface/widgets/server/user/user_info_box.cpp
     src/interface/widgets/server/user/user_info_connection.cpp

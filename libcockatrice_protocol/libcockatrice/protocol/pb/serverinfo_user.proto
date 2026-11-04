@@ -1,4 +1,5 @@
 syntax = "proto2";
+import "card_art_crop.proto";
 
 message ServerInfo_User {
     enum UserLevelFlag {
@@ -21,6 +22,7 @@ message ServerInfo_User {
         optional double margin_pct_r = 4 [default = 0.02];
         optional double vertical_offset = 5 [default = 0.35];
         optional double zoom = 6 [default = 1.0];
+        optional CardArtCrop crop = 7;
     };
 
     optional string name = 1;

@@ -19,4 +19,7 @@ message Event_ServerIdentification {
     // enumerator parse an unknown value as NoOptions and fall back to sending
     // the plaintext password. New clients check this field instead.
     optional bool supports_challenge_response = 5;
+    // Older servers do not preserve custom crops. Clients should offer crop
+    // editing only when this capability is explicitly advertised.
+    optional bool supports_card_art_crop = 6;
 }
