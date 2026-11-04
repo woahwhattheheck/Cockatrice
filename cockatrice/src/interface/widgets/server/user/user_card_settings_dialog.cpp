@@ -343,6 +343,13 @@ UserCardArtSettingsDialog::UserCardArtSettingsDialog(const CardArtParams &initia
         const QString storedProviderId = currentParams.cardProviderId;
         searchBar->setText(currentParams.cardName);
         onCardNameChanged(currentParams.cardName);
+        if (currentParams.cardName.isEmpty()) {
+            // A saved server banner can refer to a card missing locally. Keep
+            // its identity on open; only an explicit edit invalidates it.
+            currentParams.cardName = initial.cardName;
+            currentParams.cardProviderId = storedProviderId;
+            saveButton->setEnabled(true);
+        }
 
         // onCardNameChanged leaves the printing combo on the first printing in
         // the database, which would silently change the stored banner card on
@@ -465,6 +472,8 @@ void UserCardArtSettingsDialog::setupUi()
     previewGroup->setLayout(previewLayout);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    saveButton = buttons->button(QDialogButtonBox::Ok);
+    saveButton->setEnabled(!currentParams.cardName.isEmpty());
     removeBtn = new QPushButton;
     buttons->addButton(removeBtn, QDialogButtonBox::ResetRole);
 
@@ -547,6 +556,7 @@ void UserCardArtSettingsDialog::onCardNameChanged(const QString &name)
     currentPixmap = {};
     fullCardPixmap = {};
     cropButton->setEnabled(false);
+    saveButton->setEnabled(false);
     preview->setPixmap(currentPixmap);
     preview->setAttribution({});
 
@@ -560,6 +570,7 @@ void UserCardArtSettingsDialog::onCardNameChanged(const QString &name)
         return;
     }
 
+    saveButton->setEnabled(true);
     const QString previousCard = currentParams.cardName;
     const QString previousProvider = currentParams.cardProviderId;
     currentParams.cardName = name;
