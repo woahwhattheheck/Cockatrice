@@ -114,6 +114,7 @@ private:
     QLabel *previewCaptionLabel;
     QGroupBox *previewGroup;
     QPushButton *removeBtn;
+    QPushButton *saveButton;
     QPushButton *cropButton;
     QDoubleSpinBox *marginLSpin;
     QDoubleSpinBox *marginRSpin;
