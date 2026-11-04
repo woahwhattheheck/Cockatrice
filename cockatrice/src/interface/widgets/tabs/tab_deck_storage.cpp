@@ -2,6 +2,7 @@
 
 #include "../../../client/settings/cache_settings.h"
 #include "../../deck_loader/deck_loader.h"
+#include "../../deck_loader/remote_deck_download.h"
 #include "../../pixel_map_generator.h"
 #include "../cards/additional_info/deck_color_identity.h"
 #include "../deck_share/deck_share_utils.h"
@@ -34,6 +35,7 @@
 #include <QModelIndex>
 #include <QModelIndexList>
 #include <QPixmap>
+#include <QPointer>
 #include <QSharedPointer>
 #include <QSize>
 #include <QSizePolicy>
@@ -570,44 +572,62 @@ void TabDeckStorage::openRemoteDeckFinished(const Response &r, const CommandCont
 void TabDeckStorage::actDownload()
 {
     QModelIndex curLeft = localDirView->selectionModel()->currentIndex();
-    while (!localDirModel->isDir(curLeft)) {
+    while (curLeft.isValid() && !localDirModel->isDir(curLeft)) {
         curLeft = curLeft.parent();
     }
+    const QString directoryPath = curLeft.isValid() ? localDirModel->filePath(curLeft) : localDirModel->rootPath();
 
-    for (const auto curRight : serverDirView->selectionModel()->selectedRows()) {
-        downloadNodeAtIndex(curLeft, curRight);
+    // Resolve the whole selection before sending requests: a synchronous reply
+    // can refresh the remote tree or close this tab while dispatch is running.
+    QList<DeckDownloadTask> downloads;
+    QStringList errors;
+    const auto roots = RemoteDeckDownload::selectionRoots(serverDirView->selectionModel()->selectedRows());
+    for (const auto &index : roots) {
+        collectDeckDownloads(directoryPath, index, downloads, errors);
     }
-}
 
-void TabDeckStorage::downloadNodeAtIndex(const QModelIndex &curLeft, const QModelIndex &curRight)
-{
-    auto node = serverDirView->getNode(curRight);
-    if (const auto dirNode = dynamic_cast<RemoteDeckList_TreeModel::DirectoryNode *>(node)) {
-        // node at index is a folder
-        const QString name = dirNode->getName();
-
-        const auto dirIndex = curLeft.isValid() ? curLeft : localDirModel->index(localDirModel->rootPath());
-        const auto newDirIndex = localDirModel->mkdir(dirIndex, name);
-
-        int rows = serverDirView->model()->rowCount(curRight);
-        for (int i = 0; i < rows; i++) {
-            const auto childIndex = serverDirView->model()->index(i, 0, curRight);
-            downloadNodeAtIndex(newDirIndex, childIndex);
+    const QPointer<TabDeckStorage> alive(this);
+    for (const auto &download : downloads) {
+        if (!alive || client->getStatus() != StatusLoggedIn) {
+            return;
         }
-    } else if (const auto fileNode = dynamic_cast<RemoteDeckList_TreeModel::FileNode *>(node)) {
-        // node at index is a deck
-        const QString dirPath = curLeft.isValid() ? localDirModel->filePath(curLeft) : localDirModel->rootPath();
-        const QString filePath = dirPath + QString("/deck_%1.cod").arg(fileNode->getId());
-
         Command_DeckDownload cmd;
-        cmd.set_deck_id(fileNode->getId());
-
+        cmd.set_deck_id(download.deckId);
         PendingCommand *pend = client->prepareSessionCommand(cmd);
-        pend->setExtraData(filePath);
+        pend->setExtraData(download.filePath);
         connect(pend, &PendingCommand::finished, this, &TabDeckStorage::downloadFinished);
         client->sendCommand(pend);
     }
-    // node at index is invalid
+    for (const auto &error : errors) {
+        if (!alive) {
+            return;
+        }
+        reportDownloadFailure(error);
+    }
+}
+
+void TabDeckStorage::collectDeckDownloads(const QString &directoryPath,
+                                          const QModelIndex &curRight,
+                                          QList<DeckDownloadTask> &downloads,
+                                          QStringList &errors)
+{
+    auto node = serverDirView->getNode(curRight);
+    if (const auto dirNode = dynamic_cast<RemoteDeckList_TreeModel::DirectoryNode *>(node)) {
+        QString error;
+        const QString childDirectory = RemoteDeckDownload::prepareDirectory(directoryPath, dirNode->getName(), error);
+        if (childDirectory.isEmpty()) {
+            errors.append(error);
+            return;
+        }
+
+        const int rows = serverDirView->model()->rowCount(curRight);
+        for (int i = 0; i < rows; i++) {
+            collectDeckDownloads(childDirectory, serverDirView->model()->index(i, 0, curRight), downloads, errors);
+        }
+    } else if (const auto fileNode = dynamic_cast<RemoteDeckList_TreeModel::FileNode *>(node)) {
+        downloads.append(
+            {fileNode->getId(), QDir(directoryPath).filePath(QStringLiteral("deck_%1.cod").arg(fileNode->getId()))});
+    }
 }
 
 void TabDeckStorage::downloadFinished(const Response &r,
@@ -615,15 +635,56 @@ void TabDeckStorage::downloadFinished(const Response &r,
                                       const QVariant &extraData)
 {
     if (r.response_code() != Response::RespOk) {
+        reportDownloadFailure(tr("The server could not provide the requested deck."));
         return;
     }
 
-    const Response_DeckDownload &resp = r.GetExtension(Response_DeckDownload::ext);
-    QString filePath = extraData.toString();
+    if (!r.HasExtension(Response_DeckDownload::ext)) {
+        reportDownloadFailure(tr("The server did not provide deck data."));
+        return;
+    }
+    QString error;
+    const auto deck =
+        RemoteDeckDownload::parse(QString::fromStdString(r.GetExtension(Response_DeckDownload::ext).deck()), error);
+    if (!deck) {
+        reportDownloadFailure(error);
+        return;
+    }
+    const QString filePath = extraData.toString();
+    if (!DeckLoader::saveToFile(*deck, filePath, DeckFileFormat::Cockatrice)) {
+        reportDownloadFailure(tr("Could not save deck to %1.").arg(filePath));
+    }
+}
 
-    DeckList deckList = DeckList(QString::fromStdString(resp.deck()));
+void TabDeckStorage::reportDownloadFailure(const QString &message)
+{
+    // Replies keep arriving while an error notice is visible. Reuse one
+    // nonblocking dialog instead of nesting a modal event loop for each reply.
+    const bool createNotice = !downloadFailureNotice;
+    if (createNotice) {
+        downloadFailureCount = 0;
+        downloadFailureDetails.clear();
+        downloadFailureNotice = new QMessageBox(QMessageBox::Critical, tr("Download deck"), {}, QMessageBox::Ok, this);
+        downloadFailureNotice->setAttribute(Qt::WA_DeleteOnClose);
+        downloadFailureNotice->setTextFormat(Qt::PlainText);
+        connect(downloadFailureNotice, &QDialog::finished, this, [this] {
+            // Closing hides the notice before deferred deletion. A later failure
+            // must open a new notice instead of updating the hidden one.
+            downloadFailureNotice.clear();
+        });
+    }
 
-    DeckLoader::saveToFile(deckList, filePath, DeckFileFormat::Cockatrice);
+    ++downloadFailureCount;
+    // Bound the diagnostic list even if a large folder contains many failures.
+    if (downloadFailureDetails.size() < 20) {
+        downloadFailureDetails.append(message);
+    }
+    downloadFailureNotice->setText(
+        downloadFailureCount == 1 ? message : tr("%n deck download operation(s) failed.", "", downloadFailureCount));
+    downloadFailureNotice->setDetailedText(downloadFailureDetails.join(QStringLiteral("\n\n")));
+    if (createNotice) {
+        downloadFailureNotice->open();
+    }
 }
 
 void TabDeckStorage::actNewFolder()
