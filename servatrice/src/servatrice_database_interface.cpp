@@ -1,5 +1,6 @@
 #include "servatrice_database_interface.h"
 
+#include "card_art_crop_utils.h"
 #include "deck_tag_serialization.h"
 #include "libcockatrice/protocol/pb/response.pb.h"
 #include "libcockatrice/protocol/pb/serverinfo_chat_message.pb.h"
@@ -1086,6 +1087,11 @@ ServerInfo_User Servatrice_DatabaseInterface::evalUserQueryResult(const QSqlQuer
                 }
                 if (obj.contains("zoom")) {
                     cap->set_zoom(obj["zoom"].toDouble(1.0));
+                }
+                cap->clear_crop();
+                CardArtCrop crop;
+                if (CardArtCropUtils::fromJson(obj.value("crop"), crop)) {
+                    cap->mutable_crop()->CopyFrom(crop);
                 }
             }
         }

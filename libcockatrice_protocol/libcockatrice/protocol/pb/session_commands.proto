@@ -1,4 +1,5 @@
 syntax = "proto2";
+import "card_art_crop.proto";
 
 message SessionCommand {
     enum SessionCommandType {
@@ -231,6 +232,9 @@ message Command_SetCardArtParams {
     optional double margin_pct_r = 4;
     optional double vertical_offset = 5;
     optional double zoom = 6;
+    // Omit to restore automatic art extraction. A present crop must contain
+    // all four finite coordinates and lie entirely inside the image.
+    optional CardArtCrop crop = 7;
 }
 
 // Client uploads the new password verifier to migrate a legacy account
